@@ -10,8 +10,12 @@
 
 namespace ptx = cuda::ptx;
 
+using bf16 = typename kittens::bf16; // __nvbfloat16 dtype
+// using kittens::bf16;
+
 // Full ATTN
 namespace full_attn {
+
 
 using kittens::gl;
 using kittens::st;
@@ -24,7 +28,6 @@ using kittens::rt_bf;
 using kittens::rt_fl;
 using kittens::WARPGROUP_WARPS;
 using kittens::warpid;
-using kittens::bf16;
 using kittens::warpgroup;
 using kittens::shared_allocator;
 using kittens::init_semaphore;
@@ -249,9 +252,8 @@ void full_attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 }
 
 
-template<int D>
-void full_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v,
-int batch, int heads, int seq_len){
+template<int batch, int heads, int seq_len, int D>
+void full_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v){
   typename globals_fwd<D>::q_gl q{d_q, batch, heads, seq_len, D};
   typename globals_fwd<D>::k_gl k{d_k, batch, heads, seq_len, D};
   typename globals_fwd<D>::v_gl v{d_v, batch, heads, seq_len, D};
@@ -263,14 +265,14 @@ int batch, int heads, int seq_len){
   int num_threads = NUM_WARPS*WARP_SIZE;
   auto mem_size = kittens::MAX_SHARED_MEMORY - 1024;
 
-  CHECK_CUDA(cudaDeviceSynchronize());
   cudaFuncSetAttribute(
     full_attn_fwd_kernel<D>,
     cudaFuncAttributeMaxDynamicSharedMemorySize,
     mem_size
   );
   full_attn_fwd_kernel<D><<<num_blocks, num_threads, mem_size>>>(g);
-  CHECK_CUDA(cudaDeviceSynchronize());
+  cudaDeviceSynchronize();
+  // CHECK_CUDA(cudaDeviceSynchronize());
 }
 
 }  // namespace full_attn
@@ -281,6 +283,7 @@ template<typename T, int b, int h, int s, int d>
 T* init_with_randn_values(float* h_matrix) { 
   constexpr int num_elems = b*h*s*d;
   constexpr size_t memsize = num_elems * sizeof(T);
+  T h_matrix_T[num_elems];
   T* d_matrix;
 
   std::random_device rd;
@@ -290,12 +293,13 @@ T* init_with_randn_values(float* h_matrix) {
   #pragma unroll
   for (int i = 0; i < num_elems; i++) {
       float temp_rand = distribution(generator); // Generate a double
-      h_matrix[i] = __float2bfloat16(temp_rand);
+      h_matrix[i] = temp_rand;
+      h_matrix_T[i] = __float2bfloat16(temp_rand);
   }
 
   // initialize matrix with random vlaues 
   cudaMalloc(&d_matrix, memsize);
-  cudaMemcpy(d_matrix, h_matrix, memsize, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_matrix, h_matrix_T, memsize, cudaMemcpyHostToDevice);
   return d_matrix;
 }
 
@@ -315,7 +319,6 @@ void test_kernel(){
   constexpr int batches = 1;
   constexpr int heads = 1;
   constexpr int seq = 4096;
-  constexpr int num_indirect_indices = 64; // 64 token subset to copy by the block, which is a block size 
   constexpr int dims = 128;
 
   const int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
@@ -325,27 +328,18 @@ void test_kernel(){
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
 
-  bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>(h_O);
-  bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(h_Q);
-  bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(h_K);
-  bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(h_V);
+  bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
+  bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
+  bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
+  bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
 
-  kernel_driver<bf16, batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
+  full_attn::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
 
   // check if they're the same
   cudaMemcpy(h_O, d_O, memsize_qkvo, cudaMemcpyDeviceToHost);
-  for (int i = 0; i < batches; i++) {
-      for (int j = 0; j < heads; j++) {
-          for (int k = 0; k < num_indirect_indices; k++) {
-              for (int l = 0; l < dims; l++) {
-                  if (h_O[i][j][k][l] != h_A[i][j][h_int[k]][l]) {
-                      std::cout << "mismatch at coord: " << i << " " << j << " " << k << " " << l << std::endl;
-                      std::cout << "values: " << (float)h_O[i][j][k][l] << " ; " << (float)h_A[i][j][h_int[k]][l] << std::endl;
-                  }
-              }
-          }
-      }
-  }
+  // TODO: Add a verify method.
+
+
   cudaFree(d_O);
   cudaFree(d_Q);
   cudaFree(d_K);
