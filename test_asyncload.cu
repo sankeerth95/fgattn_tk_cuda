@@ -8,6 +8,8 @@
 #include <cuda_bf16.h>
 
 #include "kittens.cuh"
+#include "gatherasyncload.cuh"
+
 
 namespace ptx = cuda::ptx;
 
@@ -21,7 +23,7 @@ namespace ducks = kittens::ducks;
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
 template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, int N_THREADS=kittens::WARP_THREADS>
-__device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const int* row_indices, kittens::semaphore& bar) { // top 64 for every 128 tile loadings
+__device__ inline void load_async_gather_indexed_(ST& dst, const GL& src, const COORD& idx, const int* row_indices, kittens::semaphore& bar) { // top 64 for every 128 tile loadings
 
     using T = typename ST::dtype;
     const int row_stride = src.template stride<axis>();
@@ -80,8 +82,8 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
 
 // overloaded function for asynchronous loading the same type yet again.
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
-__device__ static inline void load_async_gather_indexed(ST &dst, const GL &src, const COORD &idx, const int* row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, row_indices, bar);
+__device__ static inline void load_async_gather_indexed_(ST &dst, const GL &src, const COORD &idx, const int* row_indices, kittens::semaphore& bar) {
+    load_async_gather_indexed_<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, row_indices, bar);
 }
 
 
@@ -106,13 +108,12 @@ __global__ void async_gather_kernel(globals<T, IDX> g) {
     int row   = blockIdx.x;  // assert this equal to 0
 
     extern __shared__ kittens::alignment_dummy __shm[];
-    // extern __shared__ int ;
 
     kittens::shared_allocator al((int*)&(__shm[0]));
     using smem_tile = typename globals<T, IDX>::base_tile;
     smem_tile (&s_tile)  = al.allocate<smem_tile>();
 
-    // initlaize
+    // initialize
     __shared__ kittens::semaphore bar;
     if (threadIdx.x == 0){ // agnostic to the number 
         kittens::init_semaphore(bar, 0, kittens::WARP_THREADS); // one arrival for phase completion
@@ -121,9 +122,9 @@ __global__ void async_gather_kernel(globals<T, IDX> g) {
         // all threads on the same page
     __syncthreads();
 
-    // async load
+    // async load - this is just the one row loading 
     int* row_start_idx = &g.row_indices[0*smem_tile::rows]; // - 0 through smem_tile::rows - 1
-    load_async_gather_indexed(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
+    asyncload::load_async_gather_indexed(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
     kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction. 
     //release= make changes visible to other threads
     // acquire: make changes done by other threads vsiible when reading
@@ -132,7 +133,7 @@ __global__ void async_gather_kernel(globals<T, IDX> g) {
     kittens::wait(bar, 0); // check if phase 0  (parity = 0) is complete
 
 
-    load_async_gather_indexed(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
+    asyncload::load_async_gather_indexed(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
     kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction. 
     kittens::wait(bar, 1); // check for phase parity 1 
     // kittens::load_async(s_tile, g.A, {batch, head, 0, 0}); // tile is 128 size thing

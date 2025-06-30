@@ -3,12 +3,11 @@
 #include <cassert>
 #include <algorithm>
 #include <cuda.h>
-#include <cuda/ptx>
 #include <cuda_bf16.h>
 
 #include "kittens.cuh"
+#include "gatherasyncload.cuh"
 
-namespace ptx = cuda::ptx;
 
 using bf16 = typename kittens::bf16; // __nvbfloat16 dtype
 // using kittens::bf16;
@@ -54,7 +53,7 @@ struct params_fwd {
   static constexpr int kv_height = 128;  // key and value load height
 };
 
-template<int D>
+template<int D>v
 struct globals_fwd {
   using q_tile = st_bf<params_fwd<D>::qo_height, params_fwd<D>::tile_width>;
   using o_tile = st_bf<params_fwd<D>::qo_height, params_fwd<D>::tile_width>;
@@ -69,6 +68,8 @@ struct globals_fwd {
   k_gl k;
   v_gl v;
   o_gl o;
+  int* idxs;
+  int* maxidxs;
   const int N;
 };
 
@@ -90,9 +91,11 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   // output stationary indexing scheme
   // these parameters correspond to the output token attributes
   int batch = blockIdx.z;
-  int head = blockIdx.y;
-  int seq = blockIdx.x * CONSUMER_WARPGROUPS;
+  int head  = blockIdx.y;
+  int seq   = blockIdx.x * CONSUMER_WARPGROUPS;
 
+  // int kv_blocks = g.N / (params_fwd<D>::kv_height);
+  // int maxidx_warpgroup = g.maxidx[batch][head][...][warpgroupid];
   int kv_blocks = g.N / (params_fwd<D>::kv_height);
   constexpr int stages = params_fwd<D>::stages;
 
@@ -111,14 +114,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
     // 1. Initialize semaphores
     init_semaphore(q_loaded_to_smem, 0, 1);
     for (int stage = 0; stage < stages; ++stage){
-      // horrible notation, these 0,1 are added and that is the semaphore value
-      // check for arrivals: thread arrival = 0, cp.async arrival = 1
-      init_semaphore(k_loaded_to_smem[stage], 0, 1);
-      init_semaphore(v_loaded_to_smem[stage], 0, 1);
+      // semaphore on the asynchronous load operation
+      init_semaphore(k_loaded_to_smem[stage], 0, kittens::WARPGROUP_THREADS);
+      init_semaphore(v_loaded_to_smem[stage], 0, kittens::WARPGROUP_THREADS);
 
       // check for: thread arrival = CONSUMER_WARPGROUPS, cp.async arrival = 0
       init_semaphore(compute_done[stage], CONSUMER_WARPGROUPS, 0);
     }
+    asm volatile("fence.proxy.async.shared::cta;":::"memory");
 
     // 2. Initial pre-fill of the pipeline
     // 2.1. Load query
@@ -126,16 +129,21 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
     for (int wg = 0; wg < CONSUMER_WARPGROUPS; ++wg) {
       tma::load_async(q_smem[wg], g.q, {batch, head, seq + wg, 0}, q_loaded_to_smem);
     }
-    // 2.2 Load initial key and value
-    for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
-      // 2.2.1. Load key
-      tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_smem[stage]));
-      tma::load_async(k_smem[stage], g.k, {batch, head, stage, 0}, k_loaded_to_smem[stage]);
+  }
 
-      // 2.2.2. Load value
-      tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_smem[stage]));
-      tma::load_async(v_smem[stage], g.v, {batch, head, stage, 0}, v_loaded_to_smem[stage]);
-    }
+  // 2.2 Load initial key and value - change from TMA load to async gather load
+  for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
+    // 2.2.1. Load key
+    // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_smem[stage]));
+    // tma::load_async(k_smem[stage], g.k, {batch, head, stage, 0}, k_loaded_to_smem[stage]);
+    asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[stage], k_loaded_to_smem[stage]);
+    kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
+
+    // 2.2.2. Load value
+    // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_smem[stage]));
+    // tma::load_async(v_smem[stage], g.v, {batch, head, stage, 0}, v_loaded_to_smem[stage]);
+    asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[stage], v_loaded_to_smem[stage]);
+    kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
   }
   __syncthreads();
 
@@ -151,19 +159,16 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
         int prev_kv_idx = next_kv_idx - 1;
         int prev_stage = prev_kv_idx % stages;
 
-        // 3.1. Load key
-        // this is there to have current phase as incomplete! If this isn't there,
-        // load async starts with while having a completed phase state. when consumer does
-        // try_wait before accessing the shmem, it sees a completed phase. now that this is there,
-        // consumer waits until k_loaded_to_smem phase is complete (phase 0 is complete, or Phase with parity 0 is complete), 
-        tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
-        tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
+        // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
         // tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
+        asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[next_kv_idx], k_loaded_to_smem[stage]);
+        kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
         // 3.2. Load value
-        tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
-        tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
+        // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
         // tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
+        asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[next_kv_idx], v_loaded_to_smem[stage]);
+        kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
         kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
       }
@@ -252,14 +257,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
 
 template<int batch, int heads, int seq_len, int D>
-void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v){
+void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, int* d_maxidxs) {
   typename globals_fwd<D>::q_gl q{d_q, batch, heads, seq_len, D};
   typename globals_fwd<D>::k_gl k{d_k, batch, heads, seq_len, D};
   typename globals_fwd<D>::v_gl v{d_v, batch, heads, seq_len, D};
   typename globals_fwd<D>::o_gl o{d_o, batch, heads, seq_len, D};
 
-  globals_fwd<D> g{q, k, v, o, seq_len};
-  int block_per_head = seq_len/(params_fwd<D>::qo_height*CONSUMER_WARPGROUPS);  // 4
+  globals_fwd<D> g{q, k, v, o, d_idxs, d_maxidxs, seq_len};
+  int block_per_head = seq_len/(params_fwd<D>::qo_height*CONSUMER_WARPGROUPS);
   dim3 num_blocks(block_per_head, heads, batch);
   int num_threads = NUM_WARPS*WARP_SIZE;
   auto mem_size = kittens::MAX_SHARED_MEMORY - 1024;
@@ -274,7 +279,6 @@ void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v){
 }
 
 }  // namespace async_gather_attn
-
 
 
 template<typename T, int b, int h, int s, int d>
@@ -303,7 +307,7 @@ T* init_with_randn_values(float* h_matrix) {
 
 
 template<typename T, int b, int h, int s, int d>
-T* init_empty_array(){
+T* init_empty_array() {
   const int num_elements = b*h*s*d;
   T* d_array;
   const int memsize = num_elements * sizeof(T);
@@ -311,6 +315,60 @@ T* init_empty_array(){
   return d_array;
 }
 
+
+// template<typename T, int batches, int head, int seqblocks, int seq>
+// T* init_sorted_randint_array(int const max_index) {
+//   T h_indices[num_elems];
+//   T* d_indices;
+
+//   std::random_device rd;
+//   std::mt19937 generator(rd());
+//   std::uniform_int_distribution<int> distribution(0, max_index);
+
+//   std::vector<int> random_indices(num_elems);
+//   for (int i = 0; i < num_elems; i++) {
+//     random_indices[i] = distribution(generator);
+//   }
+//   std::sort(random_indices.begin(), random_indices.end());
+
+//   // copy once
+//   for (int i = 0; i < num_elems; i++) {
+//     h_indices[i] = static_cast<T>(random_indices[i]);
+//   }
+//   // initialize matrix with random vlaues 
+//   constexpr size_t memsize = num_elems * sizeof(T);
+//   cudaMalloc(&d_indices, memsize);
+//   cudaMemcpy(d_indices, h_indices, memsize, cudaMemcpyHostToDevice);
+//   return d_indices;
+// }
+
+template<typename T, int batches, int heads, int seqblocks, int seq>
+std::pair<T*, T*> init_allindex_array(
+  int* h_indices_ptr,
+  int* h_maxindex_ptr
+) {
+  // int &h_indices [batches][heads][seq_blocks][seq] = reinterpret_cast<(&)[][][][]>(h_indices_ptr);
+
+  // for (int b = 0; b < batches; b++){  
+  //   for(int h = 0; h < heads; h++) {
+
+      
+  //     for (int seqblocks = 0; seqblocks < seq/64; seqblocks++) {
+  //       for (int s = 0; s < seq; s) {
+  //         h_indices[b][h][seqblocks][s] = s;
+  //       }
+  //     }
+
+
+  //   }
+  // }
+
+  T* d_indices;
+  T* d_maxidxs;
+  
+  
+  return {d_indices, d_maxidxs};
+}
 
 void test_kernel(){
     
@@ -325,19 +383,23 @@ void test_kernel(){
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
+  int h_indices[batches][heads][seq/64][seq];
+  int h_maxidxs[batches][heads][seq/64][seq];
+
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
+  auto [idxs, maxidxs] = init_allindex_array<int, batches, heads, seq/64, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
+  // int * d_kvidx = 
 
-  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
+  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
   cudaDeviceSynchronize();
 
   // check if they're the same
   cudaMemcpy(h_O, d_O, memsize_qkvo, cudaMemcpyDeviceToHost);
   // TODO: Add a verify method.
-
 
   cudaFree(d_O);
   cudaFree(d_Q);
@@ -348,7 +410,7 @@ void test_kernel(){
 
 
 void benchmark_kernel(){
-    
+
   constexpr int batches = 1;
   constexpr int heads = 32;
   constexpr int seq = 4096;
@@ -359,11 +421,15 @@ void benchmark_kernel(){
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
+  int h_indices[batches][heads][seq/64][seq];
+  int h_maxidxs[batches][heads][seq/64][seq];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
+  auto [idxs, maxidxs] = init_allindex_array<int, batches, heads, seq/64, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
+  // int* d_kv_idxs = init_sorted_randint_array<int, batches, heads, seq/64, seq>();
 
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -372,7 +438,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
+    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);
@@ -391,9 +457,8 @@ void benchmark_kernel(){
 
 int main(){
   test_kernel();
-  benchmark_kernel();
+  // benchmark_kernel();
   return 0;
 }
-
 
 
