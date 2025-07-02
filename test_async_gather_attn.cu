@@ -50,10 +50,10 @@ struct params_fwd {
   static constexpr int tile_width = D;  // D is 128
   static constexpr int stages = 2;  // pipelined stages
   static constexpr int qo_height = 64;  // query output height
-  static constexpr int kv_height = 128;  // key and value load height
+  static constexpr int kv_height = 128;  // key and value load height -> gather width is 128.
 };
 
-template<int D>v
+template<int D>
 struct globals_fwd {
   using q_tile = st_bf<params_fwd<D>::qo_height, params_fwd<D>::tile_width>;
   using o_tile = st_bf<params_fwd<D>::qo_height, params_fwd<D>::tile_width>;
@@ -74,7 +74,7 @@ struct globals_fwd {
 };
 
 
-template<int D>
+template<int B, int H, int S, int D>
 __global__ __launch_bounds__(NUM_WARPS*WARP_SIZE, 1)
 void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   using q_tile = globals_fwd<D>::q_tile;
@@ -117,63 +117,57 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       // semaphore on the asynchronous load operation
       init_semaphore(k_loaded_to_smem[stage], 0, kittens::WARPGROUP_THREADS);
       init_semaphore(v_loaded_to_smem[stage], 0, kittens::WARPGROUP_THREADS);
-
-      // check for: thread arrival = CONSUMER_WARPGROUPS, cp.async arrival = 0
       init_semaphore(compute_done[stage], CONSUMER_WARPGROUPS, 0);
     }
     asm volatile("fence.proxy.async.shared::cta;":::"memory");
 
     // 2. Initial pre-fill of the pipeline
     // 2.1. Load query
+  }
+  __syncthreads();
+
+  // send q
+  if(threadIdx.x == 0){
     tma::expect_bytes(q_loaded_to_smem, sizeof(q_smem));
     for (int wg = 0; wg < CONSUMER_WARPGROUPS; ++wg) {
       tma::load_async(q_smem[wg], g.q, {batch, head, seq + wg, 0}, q_loaded_to_smem);
     }
   }
 
-  // 2.2 Load initial key and value - change from TMA load to async gather load
-  for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
-    // 2.2.1. Load key
-    // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_smem[stage]));
-    // tma::load_async(k_smem[stage], g.k, {batch, head, stage, 0}, k_loaded_to_smem[stage]);
-    asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[stage], k_loaded_to_smem[stage]);
-    kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
+  // send kv (initial pipeline stages)
+  if(warpgroupid == NUM_WARPGROUPS-1){
+    for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
+      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[stage], k_loaded_to_smem[stage]);
+      kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-    // 2.2.2. Load value
-    // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_smem[stage]));
-    // tma::load_async(v_smem[stage], g.v, {batch, head, stage, 0}, v_loaded_to_smem[stage]);
-    asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[stage], v_loaded_to_smem[stage]);
-    kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
+      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[stage], v_loaded_to_smem[stage]);
+      kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
+    }
   }
   __syncthreads();
 
   if (warpgroupid == NUM_WARPGROUPS-1) {  // last warpgroup is a producer warpgroup
-    // 3. Setup producer pipeline
     warpgroup::decrease_registers<32>();
+    for (int next_kv_idx = stages-1; next_kv_idx < kv_blocks; ++next_kv_idx) {
+      int stage = next_kv_idx%stages;
+      int prev_kv_idx = next_kv_idx - 1;
+      int prev_stage = prev_kv_idx % stages;
 
-    // only one thread does TMA ops fetch data into pipeline stages.
-    // fill the final stage of the pipeline and wait for compute to finish before circling back
-    if (kittens::warpid() == NUM_WARPS - 4) { // first warp in producer warpgroup
-      for (int next_kv_idx = stages-1; next_kv_idx < kv_blocks; ++next_kv_idx) {
-        int stage = next_kv_idx%stages;
-        int prev_kv_idx = next_kv_idx - 1;
-        int prev_stage = prev_kv_idx % stages;
+      // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
+      // tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[next_kv_idx], k_loaded_to_smem[stage]);
+      kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-        // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
-        // tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
-        asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[next_kv_idx], k_loaded_to_smem[stage]);
-        kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
+      // 3.2. Load value
+      // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
+      // tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
+      // fetch next 128 values
+      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[next_kv_idx], v_loaded_to_smem[stage]);
+      kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-        // 3.2. Load value
-        // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
-        // tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
-        asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[next_kv_idx], v_loaded_to_smem[stage]);
-        kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
-
-        kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
-      }
+      kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
     }
-  } else {  // these are consumer warps
+  } else {
     warpgroup::increase_registers<160>();
 
     constexpr int qo_regtile = params_fwd<D>::qo_height/WARPGROUP_WARPS;
@@ -264,17 +258,20 @@ void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, i
   typename globals_fwd<D>::o_gl o{d_o, batch, heads, seq_len, D};
 
   globals_fwd<D> g{q, k, v, o, d_idxs, d_maxidxs, seq_len};
-  int block_per_head = seq_len/(params_fwd<D>::qo_height*CONSUMER_WARPGROUPS);
+  constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
+
+  int block_per_head = seq_len/qo_producerblock;
+
   dim3 num_blocks(block_per_head, heads, batch);
   int num_threads = NUM_WARPS*WARP_SIZE;
   auto mem_size = kittens::MAX_SHARED_MEMORY - 1024;
 
   cudaFuncSetAttribute(
-    attn_fwd_kernel<D>,
+    attn_fwd_kernel<batch, heads, seq_len, D>,
     cudaFuncAttributeMaxDynamicSharedMemorySize,
     mem_size
   );
-  attn_fwd_kernel<D><<<num_blocks, num_threads, mem_size>>>(g);
+  attn_fwd_kernel<batch, heads, seq_len, D><<<num_blocks, num_threads, mem_size>>>(g);
   // CHECK_CUDA(cudaDeviceSynchronize());
 }
 
@@ -294,9 +291,9 @@ T* init_with_randn_values(float* h_matrix) {
 
   #pragma unroll
   for (int i = 0; i < num_elems; i++) {
-      float temp_rand = distribution(generator); // Generate a double
-      h_matrix[i] = temp_rand;
-      h_matrix_T[i] = __float2bfloat16(temp_rand);
+    float temp_rand = distribution(generator); // Generate a double
+    h_matrix[i] = temp_rand;
+    h_matrix_T[i] = __float2bfloat16(temp_rand);
   }
 
   // initialize matrix with random vlaues 
@@ -342,31 +339,35 @@ T* init_empty_array() {
 //   return d_indices;
 // }
 
-template<typename T, int batches, int heads, int seqblocks, int seq>
-std::pair<T*, T*> init_allindex_array(
-  int* h_indices_ptr,
-  int* h_maxindex_ptr
-) {
-  // int &h_indices [batches][heads][seq_blocks][seq] = reinterpret_cast<(&)[][][][]>(h_indices_ptr);
-
-  // for (int b = 0; b < batches; b++){  
-  //   for(int h = 0; h < heads; h++) {
-
-      
-  //     for (int seqblocks = 0; seqblocks < seq/64; seqblocks++) {
-  //       for (int s = 0; s < seq; s) {
-  //         h_indices[b][h][seqblocks][s] = s;
-  //       }
-  //     }
-
-
-  //   }
-  // }
-
-  T* d_indices;
-  T* d_maxidxs;
+template<int batches, int heads, int seqblocks, int seq>
+std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_ptr) {
+  using ArrayType = int[batches][heads][seqblocks][seq];
+  using MaxIndexArrayType = int[batches][heads][seqblocks];
+  ArrayType *h_indices_array_ptr = reinterpret_cast<ArrayType*>(h_indices_ptr);
+  ArrayType &h_indices = *h_indices_array_ptr;
   
-  
+  MaxIndexArrayType *h_maxindex_array_ptr = reinterpret_cast<MaxIndexArrayType*>(h_maxindex_ptr);
+  MaxIndexArrayType &h_maxindex = *h_maxindex_array_ptr;
+
+  for (int b = 0; b < batches; b++){  
+    for(int h = 0; h < heads; h++) {
+
+      for (int seqblock = 0; seqblock < seqblocks; seqblock++) {
+        for (int s = 0; s < seq; s++) {
+          h_indices[b][h][seqblocks][s] = s;
+        }
+        h_maxindex[b][h][seqblocks] = seq-1;
+      }
+
+    }
+  }
+
+  int* d_indices;
+  int* d_maxidxs;
+  cudaMalloc(&d_indices, sizeof(ArrayType));
+  cudaMalloc(&d_maxidxs, sizeof(MaxIndexArrayType));
+  cudaMemcpy(d_indices, h_indices_ptr, sizeof(ArrayType), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_maxidxs, h_maxindex_ptr, sizeof(MaxIndexArrayType), cudaMemcpyHostToDevice);
   return {d_indices, d_maxidxs};
 }
 
@@ -376,7 +377,8 @@ void test_kernel(){
   constexpr int heads = 1;
   constexpr int seq = 4096;
   constexpr int dims = 128;
-
+  constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
+  constexpr int seqblocks = seq / qoblocksize_;
   const int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
   
   float h_O[batches][heads][seq][dims];
@@ -386,16 +388,23 @@ void test_kernel(){
   int h_indices[batches][heads][seq/64][seq];
   int h_maxidxs[batches][heads][seq/64][seq];
 
-
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<int, batches, heads, seq/64, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
-  // int * d_kvidx = 
+  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
+
+
+  cudaError_t err2 = cudaDeviceSynchronize();
+  if (err2 != cudaSuccess) {
+    printf("___CUDA error: %s\n", cudaGetErrorString(err2));
+  }
 
   async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
-  cudaDeviceSynchronize();
+  cudaError_t err = cudaDeviceSynchronize();
+  if (err != cudaSuccess) {
+    printf("CUDA error: %s\n", cudaGetErrorString(err));
+  }
 
   // check if they're the same
   cudaMemcpy(h_O, d_O, memsize_qkvo, cudaMemcpyDeviceToHost);
@@ -408,7 +417,6 @@ void test_kernel(){
 }
 
 
-
 void benchmark_kernel(){
 
   constexpr int batches = 1;
@@ -416,19 +424,22 @@ void benchmark_kernel(){
   constexpr int seq = 4096;
   constexpr int dims = 128;
 
+  constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
+  constexpr int seqblocks = seq / qoblocksize_;
   constexpr int NITERS = 200;
 
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
-  int h_indices[batches][heads][seq/64][seq];
-  int h_maxidxs[batches][heads][seq/64][seq];
+
+  int h_indices[batches][heads][seqblocks][seq];
+  int h_maxidxs[batches][heads][seqblocks][seq];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<int, batches, heads, seq/64, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
+  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
   // int* d_kv_idxs = init_sorted_randint_array<int, batches, heads, seq/64, seq>();
 
   cudaEvent_t start, stop;
@@ -457,7 +468,7 @@ void benchmark_kernel(){
 
 int main(){
   test_kernel();
-  // benchmark_kernel();
+  benchmark_kernel();
   return 0;
 }
 

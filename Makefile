@@ -11,9 +11,9 @@ NVCCFLAGS=-DNDEBUG -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-conste
 # 
 TARGET=a.out # H100
 
-SRC=test_asyncload.cu # H100
+# SRC=test_asyncload.cu # H100
 # SRC=test_fullattn.cu # H100
-# SRC=test_async_gather_attn.cu # H100
+SRC=test_async_gather_attn.cu # H100
 
 
 # Default target
