@@ -8,7 +8,6 @@
 #include <cuda_bf16.h>
 
 #include "kittens.cuh"
-#include "gatherasyncload.cuh"
 
 
 namespace ptx = cuda::ptx;
@@ -83,7 +82,7 @@ __device__ inline void load_async_gather_indexed_(ST& dst, const GL& src, const 
 // overloaded function for asynchronous loading the same type yet again.
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
 __device__ static inline void load_async_gather_indexed_(ST &dst, const GL &src, const COORD &idx, const int* row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed_<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS>(dst, src, idx, row_indices, bar);
+    load_async_gather_indexed_<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, row_indices, bar);
 }
 
 
@@ -113,10 +112,9 @@ __global__ void async_gather_kernel(globals<T, IDX> g) {
     smem_tile (&s_tile)  = al.allocate<smem_tile>();
 
     __shared__ kittens::semaphore bar;
-    __shared__ kittens::semaphore consumer_bar;
+
     if (threadIdx.x == 0){ // agnostic to the number 
-        kittens::init_semaphore(bar, 0, kittens::WARPGROUP_THREADS); // one arrival for phase completion
-        kittens::init_semaphore(consumer_bar, 0, kittens::WARPGROUP_THREADS); // one arrival for phase completion
+        kittens::init_semaphore(bar, 0, kittens::WARP_THREADS); // one arrival for phase completion
         asm volatile("fence.proxy.async.shared::cta;":::"memory");
     }
         // all threads on the same page
@@ -124,40 +122,25 @@ __global__ void async_gather_kernel(globals<T, IDX> g) {
 
     // async load - this is just the one row loading 
     int* row_start_idx = &g.row_indices[0*smem_tile::rows]; // - 0 through smem_tile::rows - 1
-
-    // phase 0
-    int warpgroupid = warpid() / kittens::WARPGROUP_WARPS;
-    if (warpgroupid == 1){
-
-        load_async_gather_indexed_(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
-        kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction WHEN data arrives. 
-
-        kittens::wait(consumer_bar, 0);
-
-        load_async_gather_indexed_(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
-        kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction. 
-
-        kittens::wait(consumer_bar, 1);
-        
-
-    } else if (warpgroupid == 0){
+    load_async_gather_indexed_(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
+    kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction. 
+    //release= make changes visible to other threads
+    // acquire: make changes done by other threads vsiible when reading
+    //         "mbarrier.arrive.release.cta.shared::cta.b64 _, [%0];\n"
+    // the _ is a temporary register that is unused.
+    kittens::wait(bar, 0); // check if phase 0  (parity = 0) is complete
 
 
-        kittens::wait(bar, 0); // check if phase 0  (parity = 0) is complete    
-
-        if( ) kittens::arrive(consumer_barrier);
-
-        kittens::wait(bar, 1); // check if phase 0  (parity = 0) is complete    
-        
-        if( ) kittens::arrive(consumer_barrier);
-
-
-    } else {
-        assert(false);
-    }
-
-    __syncthreads();
+    load_async_gather_indexed_(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
+    kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction. 
+    kittens::wait(bar, 1); // check for phase parity 1 
+    // kittens::load_async(s_tile, g.A, {batch, head, 0, 0}); // tile is 128 size thing
+    // kittens::load_async_wait();
+    
+    // async store
     kittens::store(g.O, s_tile, {batch, head, row, 0}); // store the tile into meor y
+    // wait();    
+    __syncthreads();
 }
 
 
@@ -190,7 +173,7 @@ void kernel_driver(T *d_A, T* d_O, IDX* d_int) {  // reste
 
     const int num_rows_per_block = globals<bf16, int>::base_tile::rows;
     dim3 num_blocks(num_indirect_indices/num_rows_per_block, 1, 1);
-    int num_threads = 2*128; // single warpgroup
+    int num_threads = 32; // single warp
 
     async_gather_kernel<<<num_blocks, num_threads, memsize>>>(g);
 }
@@ -218,7 +201,6 @@ T* init_with_randn_values() {
     cudaMemcpy(d_matrix, h_matrix, memsize, cudaMemcpyHostToDevice);
     return d_matrix;
 }
-
 
 template<typename T, int num_elems>
 T* init_with_randint_values(int const max_index) {
@@ -263,7 +245,7 @@ void test_kernel(){
     constexpr int batches = 1;
     constexpr int heads = 1;
     constexpr int seq = 4096;
-    constexpr int num_indirect_indices = 64; // 64 token subset to copy by the block, which is a block size 
+    constexpr int num_indirect_indices = 64;
     constexpr int dims = 128;
 
     bf16* d_O = init_empty_array<bf16, batches, heads, num_indirect_indices, dims>();
@@ -312,6 +294,5 @@ int main(){
 
     return 0;
 }
-
 
 
