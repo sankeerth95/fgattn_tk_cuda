@@ -121,7 +121,7 @@ __global__ void async_gather_kernel(globals<T, IDX> g) {
     __syncthreads();
 
     // async load - this is just the one row loading 
-    int* row_start_idx = &g.row_indices[0*smem_tile::rows]; // - 0 through smem_tile::rows - 1
+    int* row_start_idx = &g.row_indices[0*smem_tile::cols]; // - 0 through smem_tile::rows - 1
     load_async_gather_indexed_(s_tile, g.A, {batch, head, 0, 0}, row_start_idx, bar); // tile is 128 size thing
     kittens::arrive(bar); // triggers an mbarrier.arrive.release instruction. 
     //release= make changes visible to other threads

@@ -58,9 +58,9 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
     for(int h = 0; h < heads; h++) {
       for (int seqblock = 0; seqblock < seqblocks; seqblock++) {
         for (int s = 0; s < seq; s++) {
-          h_indices[b][h][seqblocks][s] = s;
+          h_indices[b][h][seqblock][s] = s;
         }
-        h_maxindex[b][h][seqblocks] = seq-1;
+        h_maxindex[b][h][seqblock] = seq-1;
       }
     }
   }
