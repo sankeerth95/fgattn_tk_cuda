@@ -55,7 +55,7 @@ __device__ inline void load_async_gather_indexed_(ST& dst, const GL& src, const 
                 : "memory"
             );
         } else {
-            if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            if (row_global + unit_coord.template dim<axis>() < src.template shape<axis>()) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :

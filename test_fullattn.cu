@@ -316,8 +316,8 @@ T* init_empty_array(){
 void test_kernel(){
     
   constexpr int batches = 1;
-  constexpr int heads = 1;
-  constexpr int seq = 4096;
+  constexpr int heads = 12;
+  constexpr int seq = 32768;
   constexpr int dims = 128;
 
   const int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
@@ -351,8 +351,8 @@ void test_kernel(){
 void benchmark_kernel(){
     
   constexpr int batches = 1;
-  constexpr int heads = 32;
-  constexpr int seq = 4096;
+  constexpr int heads = 12;
+  constexpr int seq = 32768;
   constexpr int dims = 128;
 
   constexpr int NITERS = 200;

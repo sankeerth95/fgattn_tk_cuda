@@ -60,7 +60,7 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
         for (int s = 0; s < seq; s++) {
           h_indices[b][h][seqblock][s] = s;
         }
-        h_maxindex[b][h][seqblock] = seq-1;
+        h_maxindex[b][h][seqblock] = seq;
       }
     }
   }
@@ -76,8 +76,8 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
 
 void test_kernel() {
   constexpr int batches = 1;
-  constexpr int heads = 1;
-  constexpr int seq = 4096;
+  constexpr int heads = 12;
+  constexpr int seq = 20760;
   constexpr int dims = 128;
   constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
   constexpr int seqblocks = seq / qoblocksize_;
@@ -88,13 +88,13 @@ void test_kernel() {
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
   int h_indices[batches][heads][seqblocks][seq];
-  int h_maxidxs[batches][heads][seqblocks][seq];
+  int h_maxidxs[batches][heads][seqblocks];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
+  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0]);
 
   cudaError_t err2 = cudaDeviceSynchronize();
   if (err2 != cudaSuccess) {
@@ -121,13 +121,13 @@ void test_kernel() {
 void benchmark_kernel(){
 
   constexpr int batches = 1;
-  constexpr int heads = 32;
-  constexpr int seq = 4096;
+  constexpr int heads = 12;
+  constexpr int seq = 20260;
   constexpr int dims = 128;
 
   constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
   constexpr int seqblocks = seq / qoblocksize_;
-  constexpr int NITERS = 200;
+  constexpr int NITERS = 20;
 
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
