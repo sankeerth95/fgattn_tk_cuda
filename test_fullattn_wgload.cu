@@ -16,7 +16,6 @@ void test_kernel() {
   constexpr int heads = 12;
   constexpr int seq = 32768;
   constexpr int dims = 128;
-  constexpr int qoblocksize_ = full_attn_wgload::params_fwd<dims>::qo_height*full_attn_wgload::CONSUMER_WARPGROUPS;
   const     int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
   
   float h_O[batches][heads][seq][dims];
@@ -80,8 +79,6 @@ void benchmark_kernel(){
   constexpr int heads = 12;
   constexpr int seq = 32768;
   constexpr int dims = 128;
-
-  constexpr int qoblocksize_ = full_attn_wgload::params_fwd<dims>::qo_height*full_attn_wgload::CONSUMER_WARPGROUPS;
   constexpr int NITERS = 20;
 
   float h_Q[batches][heads][seq][dims];

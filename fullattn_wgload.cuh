@@ -14,7 +14,7 @@ namespace ducks = kittens::ducks;
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
 template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, int N_THREADS=kittens::WARP_THREADS>
-__device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const int kv_idx, kittens::semaphore& bar) {
+__device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COORD& idx, const int kv_idx, kittens::semaphore& bar) {
 
     using T = typename ST::dtype;
     const int row_stride = src.template stride<axis>(); // 128
@@ -76,14 +76,14 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
 
 // overloaded function for asynchronous loading the same type yet again.
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
-__device__ static inline void load_async_gather_indexed(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, kv_idx, bar);
+__device__ static inline void load_async_warp(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, kv_idx, bar);
 }
 
 
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
-__device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS>(dst, src, idx, kv_idx, bar);
+__device__ static inline void load_async_warpgroup(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS>(dst, src, idx, kv_idx, bar);
 }
 
 
@@ -210,10 +210,10 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   // send kv (initial pipeline stages)
   if(warpgroupid == NUM_WARPGROUPS-1){
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
-      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
     }
   }
@@ -227,10 +227,10 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       int prev_kv_idx = next_kv_idx - 1;
       int prev_stage = prev_kv_idx % stages;
 
-      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, next_kv_idx * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, next_kv_idx * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
       kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
