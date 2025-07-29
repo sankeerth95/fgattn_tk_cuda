@@ -35,15 +35,15 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
     int row_indices_local[16];
     int shmem_location = (laneid/16) + 8*(laneid%16); // 32 values per warp 4 way bank conflict arises right now.
     int row_indices_local_shfled = row_indices[shmem_location]; // t0->a0, t1->a8, t2->a16, ... t15->a120, t16->a1, t17->a9, .... t32->a121
-    int warplane = threadIdx.x%32;
-    int srclane_base = (warplane < 16) ? 0 : 16;
     __syncwarp(); // all registers in the warp loaded the value
 
     // broadcast value loaded from shmem to all threads.
+    int warplane = threadIdx.x%32;
+    int srclane_base = (warplane < 16) ? 0 : 16;
     #pragma unroll
     for(int i = 0; i < 16; i++) {
       int srcLane = i + srclane_base;
-      row_indices_local[i] = __shfl_sync(0xFFFFFFFF, row_indices_local_shfled, srcLane);
+      row_indices_local[i] = __shfl_sync(0xFFFFFFFF, row_indices_local_shfled, srcLane); //
       // row_indices_local[i] = 8*i + (laneid/16); // base case
     }
 
@@ -253,7 +253,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   __syncthreads();
 
   if (warpgroupid == NUM_WARPGROUPS-1) {  // last warpgroup is a producer warpgroup
-    warpgroup::decrease_registers<32>();
+    warpgroup::decrease_registers<72>();
     // has to be hidden BEHIND the thing, right ?
     // kittens::load(indices_smem, g.idxs, {batch, head, next_kv_idx}); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
     // warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.

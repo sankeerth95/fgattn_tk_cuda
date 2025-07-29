@@ -220,7 +220,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   __syncthreads();
 
   if (warpgroupid == NUM_WARPGROUPS-1) {  // last warpgroup is a producer warpgroup
-    warpgroup::decrease_registers<32>();
+    warpgroup::decrease_registers<56>();
     
     for (int next_kv_idx = stages-1; next_kv_idx < kv_blocks; ++next_kv_idx) {
       int stage = next_kv_idx%stages;
