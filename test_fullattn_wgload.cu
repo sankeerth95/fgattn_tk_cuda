@@ -17,7 +17,6 @@ void test_kernel() {
   constexpr int seq = 32768;
   constexpr int dims = 128;
   constexpr int qoblocksize_ = full_attn_wgload::params_fwd<dims>::qo_height*full_attn_wgload::CONSUMER_WARPGROUPS;
-  constexpr int seqblocks = seq / qoblocksize_;
   const     int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
   
   float h_O[batches][heads][seq][dims];
@@ -25,22 +24,19 @@ void test_kernel() {
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
-  int h_indices[batches][heads][seqblocks][seq];
-  int h_maxidxs[batches][heads][seqblocks];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_O_gt = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0]);
 
   cudaError_t err2 = cudaDeviceSynchronize();
   if (err2 != cudaSuccess) {
     printf("___CUDA error: %s\n", cudaGetErrorString(err2));
   }
 
-  full_attn_wgload::attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
+  full_attn_wgload::attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -86,22 +82,16 @@ void benchmark_kernel(){
   constexpr int dims = 128;
 
   constexpr int qoblocksize_ = full_attn_wgload::params_fwd<dims>::qo_height*full_attn_wgload::CONSUMER_WARPGROUPS;
-  constexpr int seqblocks = seq / qoblocksize_;
   constexpr int NITERS = 20;
 
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
 
-  int h_indices[batches][heads][seqblocks][seq];
-  int h_maxidxs[batches][heads][seqblocks][seq];
-
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
-  // int* d_kv_idxs = init_sorted_randint_array<int, batches, heads, seq/64, seq>();
 
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -110,7 +100,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    full_attn_wgload::attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
+    full_attn_wgload::attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V);
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);

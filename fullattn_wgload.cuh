@@ -148,8 +148,6 @@ struct globals_fwd {
   k_gl k;
   v_gl v;
   o_gl o;
-  int* idxs;
-  int* numidxs;
   const int N;
 };
 
@@ -161,9 +159,6 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   using k_tile = globals_fwd<D>::k_tile;
   using v_tile = globals_fwd<D>::v_tile;
   using o_tile = globals_fwd<D>::o_tile;
-  constexpr int seqblocksize = params_fwd<D>::qo_height * CONSUMER_WARPGROUPS;
-  constexpr int num_seqblocks = (S + seqblocksize - 1) / seqblocksize;
-  using NumIdxs = int[B][H][num_seqblocks];
 
   extern __shared__ int __shmem[];
   // constexpr int alignment = 1024;
@@ -176,11 +171,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   int batch = blockIdx.z;
   int head  = blockIdx.y;
   int seq   = blockIdx.x * CONSUMER_WARPGROUPS;
-  int seq_block = seq / seqblocksize;
-  const NumIdxs* num_kv_idxs_ptr = reinterpret_cast<NumIdxs*>(g.numidxs);
-  const NumIdxs& num_kv_idxs = *num_kv_idxs_ptr;
-  const int num_kv_indices = num_kv_idxs[batch][head][seq_block];
-  const int kv_blocks = num_kv_indices / (params_fwd<D>::kv_height); // anotehr thing I would need to assert over heare 
+  const int kv_blocks = g.N / (params_fwd<D>::kv_height);
 
   constexpr int stages = params_fwd<D>::stages;
 
@@ -205,9 +196,6 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       init_semaphore(compute_done[stage], CONSUMER_WARPGROUPS, 0);
     }
     asm volatile("fence.proxy.async.shared::cta;":::"memory");
-
-    // 2. Initial pre-fill of the pipeline
-    // 2.1. Load query
   }
   __syncthreads();
 
@@ -222,7 +210,6 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   // send kv (initial pipeline stages)
   if(warpgroupid == NUM_WARPGROUPS-1){
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
-      int gidx_start = stage*params_fwd<D>::kv_height;
       asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
@@ -239,17 +226,10 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       int stage = next_kv_idx%stages;
       int prev_kv_idx = next_kv_idx - 1;
       int prev_stage = prev_kv_idx % stages;
-      int gidx_start = next_kv_idx*params_fwd<D>::kv_height;
 
-      // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
-      // tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
       asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      // 3.2. Load value
-      // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
-      // tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
-      // fetch next 128 values
       asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, next_kv_idx * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
@@ -339,13 +319,13 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
 
 template<int batch, int heads, int seq_len, int D>
-void attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, int* d_maxidxs) {
+void attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v) {
   typename globals_fwd<D>::q_gl q{d_q, batch, heads, seq_len, D};
   typename globals_fwd<D>::k_gl k{d_k, batch, heads, seq_len, D};
   typename globals_fwd<D>::v_gl v{d_v, batch, heads, seq_len, D};
   typename globals_fwd<D>::o_gl o{d_o, batch, heads, seq_len, D};
 
-  globals_fwd<D> g{q, k, v, o, d_idxs, d_maxidxs, seq_len};
+  globals_fwd<D> g{q, k, v, o, seq_len};
   constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
 
   int block_per_head = seq_len/qo_producerblock;
@@ -360,7 +340,6 @@ void attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, i
     mem_size
   );
   attn_fwd_kernel<batch, heads, seq_len, D><<<num_blocks, num_threads, mem_size>>>(g);
-  // CHECK_CUDA(cudaDeviceSynchronize());
 }
 
 }  // namespace full_attn_wgload
