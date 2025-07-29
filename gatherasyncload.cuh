@@ -14,10 +14,10 @@ namespace ducks = kittens::ducks;
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
 template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, int N_THREADS=kittens::WARP_THREADS>
-__device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const int* row_indices, const int num_row_indices, kittens::semaphore& bar) {
+__device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const int kv_idx, kittens::semaphore& bar) {
 
     using T = typename ST::dtype;
-    const int row_stride = src.template stride<axis>();
+    const int row_stride = src.template stride<axis>(); // 128
 
     // we can handle this many rows each time we run a memcpy_async
     constexpr int elem_per_memcpy = sizeof(float4)/sizeof(typename ST::dtype); // this is 8
@@ -30,21 +30,17 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
     uint32_t bar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
     int laneid = threadIdx.x % N_THREADS; // 0 through 32
 
-    int row_globals[total_calls];
-    #pragma unroll
-    for(int i = 0; i < total_calls; i++) {
-        int load_idx = i * N_THREADS + laneid;
-        int row = load_idx / memcpy_per_row; // 0 -> 31 / 16 = 0,1 rows per warp. 
-        row_globals[i] = row < num_row_indices ? row_indices[row] : src.template shape<axis>(); // This might ruin things - slow, global memory load in the critical path
-        // row_globals[i] = row_indices[row]; // This might ruin things - slow, global memory load in the critical path
-    }
+    // printf("coord bdrc: %d, %d, %d, %d; kv_idx = %d \n", unit_coord.b, unit_coord.d, unit_coord.r, unit_coord.c, kv_idx);
+    // printf("shape dim 2 (seq) of src: %d, \n",src.template shape<2>() );
+    // printf("offset to start ptr = %d, kv_idx = %d, row_stride = %d \n", (int)(src_ptr - &src[0]), kv_idx, row_stride);
 
     #pragma unroll
     for(int i = 0; i < total_calls; i++) {
 
         int load_idx = i * N_THREADS + laneid;
         int row = load_idx / memcpy_per_row; // 0 -> 31 / 16 = 0,1 rows per warp. 
-        int row_global = row_globals[i]; // This might ruin things - slow, global memory load in the critical path
+        int row_global = kv_idx + row;
+        // int row_global = row;
         int col = (load_idx*elem_per_memcpy) % dst.cols; // 
 
         if constexpr (assume_aligned) {
@@ -55,7 +51,7 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
                 : "memory"
             );
         } else {
-            if (row_global + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :
@@ -80,14 +76,14 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
 
 // overloaded function for asynchronous loading the same type yet again.
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
-__device__ static inline void load_async_gather_indexed(ST &dst, const GL &src, const COORD &idx, const int* row_indices, const int num_row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, row_indices, num_row_indices, bar);
+__device__ static inline void load_async_gather_indexed(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
+    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, kv_idx, bar);
 }
 
 
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
-__device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const GL &src, const COORD &idx, const int* row_indices, const int num_row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS>(dst, src, idx, row_indices, num_row_indices, bar);
+__device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
+    load_async_gather_indexed<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS>(dst, src, idx, kv_idx, bar);
 }
 
 
@@ -227,10 +223,10 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   if(warpgroupid == NUM_WARPGROUPS-1){
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
       int gidx_start = stage*params_fwd<D>::kv_height;
-      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[gidx_start], num_kv_indices, k_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[gidx_start], num_kv_indices, v_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
     }
   }
@@ -247,14 +243,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
       // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
       // tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
-      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, &g.idxs[gidx_start], num_kv_indices, k_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
       // 3.2. Load value
       // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
       // tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
       // fetch next 128 values
-      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, &g.idxs[gidx_start], num_kv_indices, v_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, next_kv_idx * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
       kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);

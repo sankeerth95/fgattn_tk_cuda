@@ -6,9 +6,8 @@
 #include <cuda_bf16.h>
 
 #include "kittens.cuh"
-#include "gatherasyncload_efficientidx.cuh"
-// #include "gatherasyncload.cuh"
-
+#include "gatherasyncload.cuh"
+#include "fullattn.cuh"
 
 // using kittens::bf16;
 template<typename T, int b, int h, int s, int d>
@@ -78,13 +77,14 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
 void test_kernel() {
   constexpr int batches = 1;
   constexpr int heads = 12;
-  constexpr int seq = 20760;
+  constexpr int seq = 32768;
   constexpr int dims = 128;
   constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
   constexpr int seqblocks = seq / qoblocksize_;
   const     int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
   
   float h_O[batches][heads][seq][dims];
+  float h_O_gt[batches][heads][seq][dims];
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
@@ -92,6 +92,7 @@ void test_kernel() {
   int h_maxidxs[batches][heads][seqblocks];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
+  bf16* d_O_gt = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
@@ -107,11 +108,32 @@ void test_kernel() {
   if (err != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
   }
-
-  // check if they're the same
   cudaMemcpy(h_O, d_O, memsize_qkvo, cudaMemcpyDeviceToHost);
-  // TODO: Add a verify method.
 
+  full_attn::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O_gt, d_Q, d_K, d_V);
+  cudaError_t err_gt = cudaDeviceSynchronize();
+  if (err_gt != cudaSuccess) {
+    printf("CUDA error: %s\n", cudaGetErrorString(err_gt));
+  }
+  cudaMemcpy(h_O_gt, d_O_gt, memsize_qkvo, cudaMemcpyDeviceToHost);
+
+  // verify if they're the same
+  bool passed = true;
+  for(int b = 0; b < batches; b++) {
+    for(int h = 0; h < heads; h++) {
+      for(int s = 0; s < seq; s++) {
+        for(int d = 0; d < dims; d++) {
+          if(abs(h_O[b][h][s][d] - h_O_gt[b][h][s][d]) > 0.001){
+            printf("fail at b = %d, h = %d, s = %d, d = %d. kernel = %f, gt = %f\n", b, h, s, d, h_O[b][h][s][d], h_O_gt[b][h][s][d]);
+            passed = false;
+          }
+        }
+      }
+    }
+  }
+  if(passed) printf("test passed :) \n");
+
+  
   cudaFree(d_O);
   cudaFree(d_Q);
   cudaFree(d_K);

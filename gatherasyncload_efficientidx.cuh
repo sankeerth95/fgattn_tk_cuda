@@ -62,7 +62,7 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
                 : "memory"
             );
         } else {
-            if (row_global + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :
@@ -240,8 +240,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
       int gidx_start = stage*params_fwd<D>::kv_height;
 
-      // ofcourse this is only going to be good when this load latency is hidden. Otherwise it'll be hellishly slow.
-      kittens::load(indices_smem, g.idxs, {batch, head, seq_block, stage});
+      kittens::load(indices_smem, g.idxs, {batch, head, seq_block, stage}); // TODO: CHECK
       warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
       
       asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]);
