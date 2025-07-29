@@ -50,22 +50,11 @@ void test_kernel() {
   cudaMemcpy(h_O_gt, d_O_gt, memsize_qkvo, cudaMemcpyDeviceToHost);
 
   // verify if they're the same
-  bool passed = true;
-  for(int b = 0; b < batches; b++) {
-    for(int h = 0; h < heads; h++) {
-      for(int s = 0; s < seq; s++) {
-        for(int d = 0; d < dims; d++) {
-          if(abs(h_O[b][h][s][d] - h_O_gt[b][h][s][d]) > 0.001){
-            printf("fail at b = %d, h = %d, s = %d, d = %d. kernel = %f, gt = %f\n", b, h, s, d, h_O[b][h][s][d], h_O_gt[b][h][s][d]);
-            passed = false;
-          }
-        }
-      }
-    }
-  }
-  if(passed) printf("test passed :) \n");
+  if(verify<float, batches, heads, seq, dims>(h_O, h_O_gt)) 
+    printf("test passed :) \n");
 
-  
+    
+  cudaFree(d_O_gt);
   cudaFree(d_O);
   cudaFree(d_Q);
   cudaFree(d_K);

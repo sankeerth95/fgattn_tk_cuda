@@ -41,7 +41,7 @@ void test_kernel(){
 
   // check if they're the same
   cudaMemcpy(h_O, d_O, memsize_qkvo, cudaMemcpyDeviceToHost);
-  // TODO: Add a verify method.
+  // TODO: Add a verify method. This doesn't currently exists
 
 
   cudaFree(d_O);
