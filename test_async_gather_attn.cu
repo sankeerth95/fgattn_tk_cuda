@@ -79,7 +79,7 @@ void test_kernel() {
   constexpr int heads = 12;
   constexpr int seq = 32768;
   constexpr int dims = 128;
-  constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
+  constexpr int qoblocksize_ = full_attn_wgload::params_fwd<dims>::qo_height*full_attn_wgload::CONSUMER_WARPGROUPS;
   constexpr int seqblocks = seq / qoblocksize_;
   const     int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
   
@@ -103,7 +103,7 @@ void test_kernel() {
     printf("___CUDA error: %s\n", cudaGetErrorString(err2));
   }
 
-  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
+  full_attn_wgload::attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -148,7 +148,7 @@ void benchmark_kernel(){
   constexpr int seq = 32768;
   constexpr int dims = 128;
 
-  constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
+  constexpr int qoblocksize_ = full_attn_wgload::params_fwd<dims>::qo_height*full_attn_wgload::CONSUMER_WARPGROUPS;
   constexpr int seqblocks = seq / qoblocksize_;
   constexpr int NITERS = 20;
 
@@ -173,7 +173,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
+    full_attn_wgload::attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);

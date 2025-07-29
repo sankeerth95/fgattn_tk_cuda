@@ -93,7 +93,7 @@ __device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const
 using bf16 = typename kittens::bf16; // __nvbfloat16 dtype
 
 // Full ATTN
-namespace async_gather_attn {
+namespace full_attn_wgload {
 
 using kittens::gl;
 using kittens::st;
@@ -339,7 +339,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
 
 template<int batch, int heads, int seq_len, int D>
-void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, int* d_maxidxs) {
+void attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, int* d_maxidxs) {
   typename globals_fwd<D>::q_gl q{d_q, batch, heads, seq_len, D};
   typename globals_fwd<D>::k_gl k{d_k, batch, heads, seq_len, D};
   typename globals_fwd<D>::v_gl v{d_v, batch, heads, seq_len, D};
@@ -363,7 +363,8 @@ void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, i
   // CHECK_CUDA(cudaDeviceSynchronize());
 }
 
-}  // namespace async_gather_attn
+}  // namespace full_attn_wgload
+
 
 
 
