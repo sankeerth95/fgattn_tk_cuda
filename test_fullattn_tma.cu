@@ -8,45 +8,13 @@
 
 #include "kittens.cuh"
 #include "fullattn_tma.cuh"
+#include "utils.cuh"
 
 using kittens::bf16;
 
 namespace ptx = cuda::ptx;
 
 
-template<typename T, int b, int h, int s, int d>
-T* init_with_randn_values(float* h_matrix) { 
-  constexpr int num_elems = b*h*s*d;
-  constexpr size_t memsize = num_elems * sizeof(T);
-  T h_matrix_T[num_elems];
-  T* d_matrix;
-
-  std::random_device rd;
-  std::default_random_engine generator(rd());
-  std::uniform_real_distribution<float> distribution(0.f, 1.f);
-
-  #pragma unroll
-  for (int i = 0; i < num_elems; i++) {
-      float temp_rand = distribution(generator); // Generate a double
-      h_matrix[i] = temp_rand;
-      h_matrix_T[i] = __float2bfloat16(temp_rand);
-  }
-
-  // initialize matrix with random vlaues 
-  cudaMalloc(&d_matrix, memsize);
-  cudaMemcpy(d_matrix, h_matrix_T, memsize, cudaMemcpyHostToDevice);
-  return d_matrix;
-}
-
-
-template<typename T, int b, int h, int s, int d>
-T* init_empty_array(){
-  const int num_elements = b*h*s*d;
-  T* d_array;
-  const int memsize = num_elements * sizeof(T);
-  cudaMalloc(&d_array, memsize);
-  return d_array;
-}
 
 
 void test_kernel(){
