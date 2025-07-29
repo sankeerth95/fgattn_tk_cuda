@@ -6,7 +6,7 @@
 #include <cuda_bf16.h>
 
 #include "kittens.cuh"
-#include "gatherasyncload_efficientidx.cuh"
+#include "sparseattn_asyncgatherload.cuh"
 #include "fullattn_tma.cuh"
 #include "utils.cuh"
 
