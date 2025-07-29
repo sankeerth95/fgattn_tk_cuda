@@ -1,4 +1,5 @@
 .vscode/
 *.out
 *.d
-
+*.ncu-rep
+*.nsys-rep
