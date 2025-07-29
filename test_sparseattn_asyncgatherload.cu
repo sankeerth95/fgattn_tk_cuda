@@ -10,6 +10,7 @@
 #include "fullattn_tma.cuh"
 #include "utils.cuh"
 
+using bf16 = typename kittens::bf16; // __nvbfloat16 dtype
 
 void test_kernel() {
   constexpr int batches = 1;
@@ -26,22 +27,22 @@ void test_kernel() {
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
-  int h_indices[batches][heads][seqblocks][seq];
-  int h_maxidxs[batches][heads][seqblocks];
+  int h_kv_idxs[batches][heads][seqblocks][seq];
+  int h_kv_numidxs[batches][heads][seqblocks];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_O_gt = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0]);
+  auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
 
   cudaError_t err2 = cudaDeviceSynchronize();
   if (err2 != cudaSuccess) {
     printf("___CUDA error: %s\n", cudaGetErrorString(err2));
   }
 
-  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
+  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, d_kv_idxs, d_kv_numidxs);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -53,30 +54,18 @@ void test_kernel() {
     printf("CUDA error: %s\n", cudaGetErrorString(err_gt));
   }
 
-
   // check if they're the same
   cudaMemcpy(h_O, d_O, memsize_qkvo, cudaMemcpyDeviceToHost);
   cudaMemcpy(h_O_gt, d_O_gt, memsize_qkvo, cudaMemcpyDeviceToHost);
 
   // verify
-  // verify
-  bool passed = true;
-  for(int b = 0; b < batches; b++) {
-    for(int h = 0; h < heads; h++) {
-      for(int s = 0; s < seq; s++) {
-        for(int d = 0; d < dims; d++) {
-          if(abs(h_O[b][h][s][d] - h_O_gt[b][h][s][d]) > 0.001){
-            printf("fail at b = %d, h = %d, s = %d, d = %d. kernel = %f, gt = %f\n", b, h, s, d, h_O[b][h][s][d], h_O_gt[b][h][s][d]);
-            passed = false;
-          }
-        }
-      }
-    }
-  }
-  if(passed) printf("test passed :) \n");
+  if(verify<float, batches, heads, seq, dims>(h_O, h_O_gt)) 
+    printf("test passed :) \n");
 
-
+  cudaFree(d_O_gt);
   cudaFree(d_O);
+  cudaFree(d_kv_idxs);
+  cudaFree(d_kv_numidxs);
   cudaFree(d_Q);
   cudaFree(d_K);
   cudaFree(d_V);
@@ -98,16 +87,16 @@ void benchmark_kernel(){
   float h_K[batches][heads][seq][dims];
   float h_V[batches][heads][seq][dims];
 
-  int h_indices[batches][heads][seqblocks][seq];
-  int h_maxidxs[batches][heads][seqblocks][seq];
+  int h_kv_idxs[batches][heads][seqblocks][seq];
+  int h_kv_numidxs[batches][heads][seqblocks];
 
   bf16* d_O = init_empty_array      <bf16, batches, heads, seq, dims>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [idxs, maxidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_indices[0][0][0][0], &h_maxidxs[0][0][0][0]);
-  // int* d_kv_idxs = init_sorted_randint_array<int, batches, heads, seq/64, seq>();
+  auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
 
+  
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
@@ -115,7 +104,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, idxs, maxidxs);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, d_kv_idxs, d_kv_numidxs);
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);
@@ -126,6 +115,8 @@ void benchmark_kernel(){
   printf("Average kernel time: %f us\n", 1000.f *milliseconds / NITERS);
 
   cudaFree(d_O);
+  cudaFree(d_kv_idxs);
+  cudaFree(d_kv_numidxs);
   cudaFree(d_Q);
   cudaFree(d_K);
   cudaFree(d_V);
