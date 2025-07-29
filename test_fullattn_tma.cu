@@ -7,7 +7,7 @@
 #include <cuda_bf16.h>
 
 #include "kittens.cuh"
-#include "fullattn.cuh"
+#include "fullattn_tma.cuh"
 
 using kittens::bf16;
 
@@ -68,7 +68,7 @@ void test_kernel(){
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
 
-  full_attn::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
+  full_attn_tma::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
   cudaDeviceSynchronize();
 
   // check if they're the same
@@ -111,7 +111,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    full_attn::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
+    full_attn_tma::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V); // you only test simple functions with this tool alright ? 
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);

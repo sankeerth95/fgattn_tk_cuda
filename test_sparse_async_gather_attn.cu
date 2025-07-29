@@ -7,7 +7,7 @@
 
 #include "kittens.cuh"
 #include "gatherasyncload_efficientidx.cuh"
-#include "fullattn.cuh"
+#include "fullattn_tma.cuh"
 
 // using kittens::bf16;
 template<typename T, int b, int h, int s, int d>
@@ -110,7 +110,7 @@ void test_kernel() {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
   }
 
-  full_attn::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O_gt, d_Q, d_K, d_V);
+  full_attn_tma::full_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O_gt, d_Q, d_K, d_V);
   cudaError_t err_gt = cudaDeviceSynchronize();
   if (err_gt != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err_gt));

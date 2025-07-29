@@ -6,7 +6,7 @@ using bf16 = typename kittens::bf16; // __nvbfloat16 dtype
 // using kittens::bf16;
 
 // Full ATTN
-namespace full_attn {
+namespace full_attn_tma {
 
 
 using kittens::gl;
@@ -266,5 +266,5 @@ void full_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v){
   // CHECK_CUDA(cudaDeviceSynchronize());
 }
 
-}  // namespace full_attn
+}  // namespace full_attn_tma
 
