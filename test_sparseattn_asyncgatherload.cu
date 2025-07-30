@@ -95,8 +95,8 @@ void benchmark_kernel(){
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
   auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
+  // auto [d_kv_idxs, d_kv_numidxs] = init_halfindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
 
-  
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
@@ -124,7 +124,7 @@ void benchmark_kernel(){
 
 
 int main(){
-  test_kernel();
+  for(int i = 0; i < 10; i++) test_kernel();
   benchmark_kernel();
   return 0;
 }

@@ -59,7 +59,7 @@ void benchmark_kernel(){
   constexpr int seq = 32768;
   constexpr int dims = 128;
 
-  constexpr int NITERS = 200;
+  constexpr int NITERS = 20;
 
   
   float h_Q[batches][heads][seq][dims];
