@@ -15,8 +15,9 @@ TARGET=a.out # H100
 # SRC=test_asyncload.cu # H100
 # SRC=test_fullattn_tma.cu # H100
 # SRC=test_fullattn_wgload.cu # H100
-SRC=test_fullattn_wgload_padded.cu # H100
+# SRC=test_fullattn_wgload_padded.cu # H100
 # SRC=test_sparseattn_asyncgatherload.cu # H100
+SRC=test_sparseattn_asyncgatherload_padded.cu # H100
 
 
 # Default target
