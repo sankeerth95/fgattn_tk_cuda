@@ -5,8 +5,8 @@ import torch.nn.functional as F
 import time
 
 N = 200
-labels = ['480p, 49', '480p, 81', '720p, 49', '720p, 81'][1:2]
-sequences = [20280, 32768, 45832, 74056][1:2]
+labels = ['480p, 49', '480p, 81', '720p, 49', '720p, 81']
+sequences = [20280, 32768, 45832, 74056]
 
 dim = [1536, 5120][1]
 ffn_dim = [8960, 13824][1]
@@ -29,7 +29,7 @@ for label, seq in zip(labels, sequences):
         o =  x@y
     torch.cuda.synchronize()
     end = time.time()
-    print((end - start)/N)
+    print((end - start)/N, 's')
 
 
     print('flash attention:')
@@ -43,7 +43,7 @@ for label, seq in zip(labels, sequences):
         o =  F.scaled_dot_product_attention(q, k, v)
     torch.cuda.synchronize()
     end = time.time()
-    print((end - start)/N)
+    print((end - start)/N, 's')
 
 
     print('kvlinear layer for cross attention:')
@@ -56,7 +56,7 @@ for label, seq in zip(labels, sequences):
         o =  x@y
     torch.cuda.synchronize()
     end = time.time()
-    print((end - start)/N)
+    print((end - start)/N, 's')
 
 
     print('cross attention:')
@@ -70,7 +70,7 @@ for label, seq in zip(labels, sequences):
         o =  F.scaled_dot_product_attention(q, k, v)
     torch.cuda.synchronize()
     end = time.time()
-    print((end - start)/N)
+    print((end - start)/N, 's')
 
 
     print('ffn proj')
@@ -83,7 +83,7 @@ for label, seq in zip(labels, sequences):
         o =  x@y
     torch.cuda.synchronize()
     end = time.time()
-    print((end - start)/N)
+    print((end - start)/N, 's')
 
 
 
@@ -97,7 +97,7 @@ for label, seq in zip(labels, sequences):
         o =  x@y
     torch.cuda.synchronize()
     end = time.time()
-    print((end - start)/N)
+    print((end - start)/N, 's')
 
 
 
