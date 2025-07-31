@@ -101,12 +101,14 @@ __device__ static inline void neginfty_pad_seq_dimension(T &dst, const T &src, c
         // float pad_value = 0.f;//kittens::neg_infty();
 
         bool is_out_of_sequence_bound;
-        is_out_of_sequence_bound = (kv_idx_start + k*8 + kittens::laneid()%4 >= kv_seqlen);
+        is_out_of_sequence_bound = (kv_idx_start + k*8 + 2*(kittens::laneid()%4) >= kv_seqlen);
         dst.tiles[i][j].data[k+0].x = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+0].x;
         dst.tiles[i][j].data[k+2].x = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+2].x;
 
+        printf("kvstartidx, k, seqlen: %d, %d, %d \n", kv_idx_start, k, kv_seqlen);
+
         // second packed element in bf16 tile.
-        is_out_of_sequence_bound = (kv_idx_start + k*8 + kittens::laneid()%4 + 1 >= kv_seqlen);
+        is_out_of_sequence_bound = (kv_idx_start + k*8 + 2*(kittens::laneid()%4) + 1 >= kv_seqlen);
         dst.tiles[i][j].data[k+0].y = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+0].y;
         dst.tiles[i][j].data[k+2].y = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+2].y;
       }
@@ -134,7 +136,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   int batch = blockIdx.z;
   int head  = blockIdx.y;
   int seq   = blockIdx.x * CONSUMER_WARPGROUPS;
-  const int kv_blocks = g.N / (params_fwd<D>::kv_height);
+  const int kv_blocks = (g.N + params_fwd<D>::kv_height - 1) / (params_fwd<D>::kv_height);
 
   constexpr int stages = params_fwd<D>::stages;
 
@@ -180,7 +182,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   __syncthreads();
 
   if (warpgroupid == NUM_WARPGROUPS-1) {  // last warpgroup is a producer warpgroup
-    warpgroup::decrease_registers<56>();
+    warpgroup::decrease_registers<80>();
     
     for (int next_kv_idx = stages-1; next_kv_idx < kv_blocks; ++next_kv_idx) {
       int stage = next_kv_idx%stages;
@@ -237,7 +239,8 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       warpgroup::mma_async_wait();
 
       // 2. Compute scaled softmax
-      neginfty_pad_seq_dimension(qkt_block, qkt_block, kv_idx_warp_start, g.N);
+      if (kv_idx == kv_blocks-1)
+        neginfty_pad_seq_dimension(qkt_block, qkt_block, kv_idx_warp_start, g.N);
       kittens::row_max(max_vec, qkt_block, max_vec);
       kittens::mul(qkt_block, qkt_block, scale_factor);
       kittens::mul(max_vec_scaled, max_vec, scale_factor);  // 1.0f/sqrt(D)

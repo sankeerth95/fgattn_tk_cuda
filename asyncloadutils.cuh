@@ -60,7 +60,8 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
                 : "memory"
             );
         } else {
-            if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            // if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            if (row_global < src.template shape<axis>()) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :
@@ -137,7 +138,8 @@ __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COO
                 : "memory"
             );
         } else {
-            if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            // if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
+            if (row_global < src.template shape<axis>()) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :

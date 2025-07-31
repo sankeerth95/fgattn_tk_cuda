@@ -124,7 +124,8 @@ void benchmark_kernel(){
 
 
 int main(){
-  for(int i = 0; i < 10; i++) test_kernel();
+  // for(int i = 0; i < 10; i++)
+  test_kernel();
   benchmark_kernel();
   return 0;
 }

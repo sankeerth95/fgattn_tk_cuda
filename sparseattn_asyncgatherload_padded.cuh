@@ -142,7 +142,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   const NumIdxs* num_kv_idxs_ptr = reinterpret_cast<NumIdxs*>(g.numidxs);
   const NumIdxs& num_kv_idxs = *num_kv_idxs_ptr;
   const int num_kv_indices = num_kv_idxs[batch][head][seq_block];
-  const int kv_blocks = num_kv_indices / (params_fwd<D>::kv_height); // anotehr thing I would need to assert over heare 
+  const int kv_blocks = (num_kv_indices + params_fwd<D>::kv_height - 1) / (params_fwd<D>::kv_height);
 
   constexpr int stages = params_fwd<D>::stages;
 
@@ -159,18 +159,13 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
   // Initialize semaphores
   if (threadIdx.x == 0) {
-    // 1. Initialize semaphores
     init_semaphore(q_loaded_to_smem, 0, kittens::WARPGROUP_THREADS * CONSUMER_WARPGROUPS);
     for (int stage = 0; stage < stages; ++stage){
-      // semaphore on the asynchronous load operation
       init_semaphore(k_loaded_to_smem[stage], 0, kittens::WARPGROUP_THREADS);
       init_semaphore(v_loaded_to_smem[stage], 0, kittens::WARPGROUP_THREADS);
       init_semaphore(compute_done[stage], CONSUMER_WARPGROUPS, 0);
     }
     asm volatile("fence.proxy.async.shared::cta;":::"memory");
-
-    // 2. Initial pre-fill of the pipeline
-    // 2.1. Load query
   }
   __syncthreads();
 
@@ -198,29 +193,17 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
   if (warpgroupid == NUM_WARPGROUPS-1) {  // last warpgroup is a producer warpgroup
     warpgroup::decrease_registers<72>();
-    // has to be hidden BEHIND the thing, right ?
-    // kittens::load(indices_smem, g.idxs, {batch, head, next_kv_idx}); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
-    // warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
     for (int next_kv_idx = stages-1; next_kv_idx < kv_blocks; ++next_kv_idx) {
       int stage = next_kv_idx%stages;
       int prev_kv_idx = next_kv_idx - 1;
       int prev_stage = prev_kv_idx % stages;
-      int gidx_start = next_kv_idx*params_fwd<D>::kv_height;
 
-      // tma::expect_bytes(k_loaded_to_smem[stage], sizeof(k_tile));
-      // tma::load_async(k_smem[stage], g.k, {batch, head, next_kv_idx, 0}, k_loaded_to_smem[stage]);
-          
-      // need to hide this latency for peak performance.
       kittens::load(indices_smem, g.idxs, {batch, head, seq_block, next_kv_idx}); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
       warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
 
       asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      // 3.2. Load value
-      // tma::expect_bytes(v_loaded_to_smem[stage], sizeof(v_tile));
-      // tma::load_async(v_smem[stage], g.v, {batch, head, next_kv_idx, 0}, v_loaded_to_smem[stage]);
-      // fetch next 128 values
       asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, indices_smem, v_loaded_to_smem[stage]);
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
@@ -246,9 +229,8 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
     constexpr float ln2inv = 1.44269504089f;
     constexpr float scale_factor = ln2inv * 0.08838834764f; //0.08838834764f;  // 1.0f/sqrt(D)
-
+    constexpr int kv_height_per_warp = params_fwd<D>::kv_height/WARPGROUP_WARPS;
     kittens::neg_infty(max_vec);
-    // kittens::neg_infty(max_vec_last_scaled);
     kittens::zero(norm_vec);
     kittens::zero(o_reg);
 
@@ -257,6 +239,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
     for (int kv_idx = 0; kv_idx < kv_blocks ; ++kv_idx) {
       int phase = kv_idx/stages;
       int stage = kv_idx%stages;
+      int kv_idx_warp_start = kv_idx*params_fwd<D>::kv_height + warpgroup::warpid()*kv_height_per_warp;
 
       // 1. wait until k arrives and compute mma
       kittens::wait(k_loaded_to_smem[stage], phase%2);
@@ -266,6 +249,8 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       warpgroup::mma_async_wait();
 
       // 2. Compute scaled softmax
+      if (kv_idx == kv_blocks-1)
+        neginfty_pad_seq_dimension(qkt_block, qkt_block, kv_idx_warp_start, num_kv_indices);
       kittens::row_max(max_vec, qkt_block, max_vec);
       kittens::mul(qkt_block, qkt_block, scale_factor);
       kittens::mul(max_vec_scaled, max_vec, scale_factor);  // 1.0f/sqrt(D)
