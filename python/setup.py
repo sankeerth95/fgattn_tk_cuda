@@ -44,7 +44,7 @@ setuptools.setup(
     name='spattn',
     ext_modules=[
         CUDAExtension(
-            name="interface",
+            name="spattn_interface",
             include_dirs=[
                 os.path.join(project_root, "./"),
                 os.path.join(thunderkittens_root, "include"),

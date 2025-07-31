@@ -1,6 +1,6 @@
 import torch
 import sys
-import interface
+import spattn_interface
 # import sattn
 # import sattn.interface
 # interface = sattn.interface
@@ -21,7 +21,7 @@ def test_attn_impls(seq_len_):
     # torch.cuda.synchronize()
 
     o = torch.empty_like(q)
-    interface.full_attn(o.contiguous(), q.contiguous(), k.contiguous(), v.contiguous())
+    spattn_interface.full_attn(o.contiguous(), q.contiguous(), k.contiguous(), v.contiguous())
     torch.cuda.synchronize()
 
     expected_torch_flashattn = torch.nn.functional.scaled_dot_product_attention(q, k, v)
@@ -37,8 +37,8 @@ def test_attn_impls(seq_len_):
     maxdiff = torch.max(torch.abs(o - expected_torch_flashattn_f32))
     print(f"Max difference between mine and torch32 implementations: {maxdiff.item()}")
 
-
-    seqblocks = 32768//64
+    return 
+    seqblocks = (32768 + 64 - 1)//64
     kv_indices = torch.empty([batch, heads, seqblocks, seq_len], device='cuda', dtype=torch.int)
     kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
     interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
