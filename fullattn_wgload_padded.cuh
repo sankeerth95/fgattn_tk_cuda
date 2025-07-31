@@ -243,7 +243,7 @@ void attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v) {
   globals_fwd<D> g{q, k, v, o, seq_len};
   constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
 
-  int block_per_head = seq_len/qo_producerblock;
+  int block_per_head = (seq_len + qo_producerblock - 1)/qo_producerblock;
 
   dim3 num_blocks(block_per_head, heads, batch);
   int num_threads = NUM_WARPS*WARP_SIZE;
