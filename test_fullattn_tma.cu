@@ -1,7 +1,5 @@
 #include <iostream>
-#include <random>
 #include <cassert>
-#include <algorithm>
 #include <cuda.h>
 #include <cuda/ptx>
 #include <cuda_bf16.h>

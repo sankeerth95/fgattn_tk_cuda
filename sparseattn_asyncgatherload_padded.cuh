@@ -2,51 +2,7 @@
 
 #include "kittens.cuh"
 #include "asyncloadutils.cuh"
-
-/**
- * @brief Pads the kv tokens out of bounds with negative infinity of the QK^T matrix. 
- *        Padding happens along the row (sequence) dimension.
- *
- * @tparam T2 The row-major register tile that reprsent QK^T matrix. 
- *
- * @param dst[out] Destination tile where the result is stored.
- * @param src[in] Source tile to apply the operation on.
- * @param kv_idx_start[in] starting token id of keys, values as seen by the warp
- * @param kv_seqlen[in] sequence length beyond which padding should occur
- * 
- * In general, you probably want a row-major tile, unless you specifically want to call mma
- */
-template<kittens::ducks::rt::row_layout T>
-__device__ static inline void neginfty_pad_seq_dimension(T &dst, const T &src, const int kv_idx_start, const int kv_seqlen) {
-  using dtype = T::dtype;
-  using unpacked_dtype = T::T;
-  unpacked_dtype pad_value = kittens::base_types::constants<unpacked_dtype>::neg_infty();
-
-  #pragma unroll
-  for(int j = 0; j < dst.width; j++) {
-    #pragma unroll
-    for(int i = 0; i < dst.height; i++) {
-      #pragma unroll
-      for(int k = 0; k < dst.packed_per_tile/2; k++) {
-
-        // k+0. k+2 data elements correspond to 8x8 tiles within the 16x16 register tile. 
-        // each 8x8 tile is distributed across 32 threads, each thread packing 2 values 
-        // float pad_value = 0.f;//kittens::neg_infty();
-        bool is_out_of_sequence_bound;
-        is_out_of_sequence_bound = (kv_idx_start + k*8 + kittens::laneid()%4 >= kv_seqlen);
-        dst.tiles[i][j].data[k+0].x = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+0].x;
-        dst.tiles[i][j].data[k+2].x = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+2].x;
-
-        // second packed element in bf16 tile.
-        is_out_of_sequence_bound = (kv_idx_start + k*8 + kittens::laneid()%4 + 1 >= kv_seqlen);
-        dst.tiles[i][j].data[k+0].y = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+0].y;
-        dst.tiles[i][j].data[k+2].y = is_out_of_sequence_bound ? pad_value : src.tiles[i][j].data[k+2].y;
-      }
-    }
-  }
-}
-
-
+#include "pad_utils.cuh"
 
 
 // Full ATTN
@@ -179,7 +135,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
 
-      kittens::load(indices_smem, g.idxs, {batch, head, seq_block, stage}); // TODO: CHECK
+      padutils::load_indices(indices_smem, g.idxs, {batch, head, seq_block, stage}, num_kv_indices); // TODO: CHECK
       warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
       
       asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]);
@@ -198,7 +154,8 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       int prev_kv_idx = next_kv_idx - 1;
       int prev_stage = prev_kv_idx % stages;
 
-      kittens::load(indices_smem, g.idxs, {batch, head, seq_block, next_kv_idx}); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
+      // kittens::load(indices_smem, g.idxs, {batch, head, seq_block, next_kv_idx}); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
+      padutils::load_indices(indices_smem, g.idxs, {batch, head, seq_block, next_kv_idx}, num_kv_indices); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
       warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
 
       asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]);
@@ -248,9 +205,10 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       kittens::mul(max_vec_last_scaled, max_vec_last_scaled, scale_factor);
       warpgroup::mma_async_wait();
 
+      // kv sequence padding - 
+      if (kv_idx == kv_blocks-1) padutils::nan_to_neginfty(qkt_block);
+
       // 2. Compute scaled softmax
-      if (kv_idx == kv_blocks-1)
-        neginfty_pad_seq_dimension(qkt_block, qkt_block, kv_idx_warp_start, num_kv_indices);
       kittens::row_max(max_vec, qkt_block, max_vec);
       kittens::mul(qkt_block, qkt_block, scale_factor);
       kittens::mul(max_vec_scaled, max_vec, scale_factor);  // 1.0f/sqrt(D)

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "kittens.cuh"
-
+#include "math_constants.h"
 
 namespace asyncload {
 
@@ -11,6 +11,33 @@ using kittens::coord;
 using kittens::st;
 using kittens::WARP_THREADS;
 namespace ducks = kittens::ducks;
+
+
+template<typename T>
+__device__ inline float4 get_nans_16bytes();
+
+template<>
+__device__ inline float4 get_nans_16bytes<float>(){
+    float4 nans = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F};
+    return nans;
+}
+
+
+template<>
+__device__ inline float4 get_nans_16bytes<bf16>(){
+    bf16 nans[8] = {
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F),
+        __float2bfloat16(CUDART_NAN_F)
+    };
+    return reinterpret_cast<float4&>(nans);
+}
+
 
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
@@ -72,8 +99,12 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
                 );
             } else {
                 // padding branch
-                float4 zeros = {0.f, 0.f, 0.f, 0.f}; // supp. to be negative infinity / rather the qk product should be neg. infinity 
-                kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
+                // float4 zeros = {0.f, 0.f, 0.f, 0.f}; // supp. to be negative infinity / rather the qk product should be neg. infinity 
+                // kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
+                // float4 nans = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F};
+                // printf("overflow\n");
+                float4 nans = get_nans_16bytes<T>();
+                kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), nans);
             }
         }
     }
@@ -150,8 +181,11 @@ __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COO
                 );
             } else {
                 // padding branch
-                float4 zeros = {0.f, 0.f, 0.f, 0.f};
-                kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
+                // float4 zeros = {0.f, 0.f, 0.f, 0.f};
+                // kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
+                // float4 nans = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F};
+                float4 nans = get_nans_16bytes<T>();
+                kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), nans);
             }
         }
     }
