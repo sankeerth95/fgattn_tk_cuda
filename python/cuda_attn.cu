@@ -1,7 +1,6 @@
-#include "fullattn_wgload.cuh"
+#include "fullattn_wgload_padded.cuh"
 #include "sparseattn_asyncgatherload_padded.cuh"
 #include "utils.cuh"
-
 
 void attn_fwd_wg_impl (
     full_attn_wgload::bf16* o, full_attn_wgload::bf16* q, full_attn_wgload::bf16* k, full_attn_wgload::bf16* v,
@@ -19,7 +18,6 @@ void attn_fwd_wg_impl (
   }
 }
 
-
 void attn_sparse_fwd_wg_impl (
     async_gather_attn::bf16* o, async_gather_attn::bf16* q, async_gather_attn::bf16* k, async_gather_attn::bf16* v,
     int* kv_indices, int* num_kv_indices,
@@ -35,8 +33,6 @@ void attn_sparse_fwd_wg_impl (
     // ... 
   }
 }
-
-
 
 
 void allindex_mask_impl(

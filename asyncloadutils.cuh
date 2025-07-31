@@ -18,30 +18,59 @@ __device__ inline float4 get_nans_16bytes();
 
 template<>
 __device__ inline float4 get_nans_16bytes<float>(){
-    float4 nans = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F};
+    float qnan = nan("");
+    float4 nans = {qnan, qnan, qnan, qnan};
     return nans;
 }
 
 
 template<>
 __device__ inline float4 get_nans_16bytes<bf16>(){
+    float qnan = nan("");
     bf16 nans[8] = {
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F),
-        __float2bfloat16(CUDART_NAN_F)
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan),
+        __float2bfloat16(qnan)
     };
     return reinterpret_cast<float4&>(nans);
 }
 
 
+template<typename T>
+__device__ inline float4 get_zeros_16bytes();
+
+template<>
+__device__ inline float4 get_zeros_16bytes<float>(){
+    float4 zeros = {0.f, 0.f, 0.f, 0.f};
+    return zeros;
+}
+
+template<>
+__device__ inline float4 get_zeros_16bytes<bf16>(){
+    float zero = 0.f;
+    bf16 zeros[8] = {
+        __float2bfloat16(zero),
+        __float2bfloat16(zero),
+        __float2bfloat16(zero),
+        __float2bfloat16(zero),
+        __float2bfloat16(zero),
+        __float2bfloat16(zero),
+        __float2bfloat16(zero),
+        __float2bfloat16(zero)
+    };
+    return reinterpret_cast<float4&>(zeros);
+}
+
+
+
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
-template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, int N_THREADS=kittens::WARP_THREADS>
+template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, int N_THREADS=kittens::WARP_THREADS, bool load_nans=true>
 __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const SV& row_indices, kittens::semaphore& bar) {
 
     using T = typename ST::dtype;
@@ -103,8 +132,13 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
                 // kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
                 // float4 nans = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F};
                 // printf("overflow\n");
-                float4 nans = get_nans_16bytes<T>();
-                kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), nans);
+                if constexpr (load_nans){
+                    float4 nans = get_nans_16bytes<T>();
+                    kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), nans);
+                } else {
+                    float4 zeros = get_zeros_16bytes<T>();
+                    kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
+                }
             }
         }
     }
@@ -119,22 +153,22 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
 
 
 // overloaded function for asynchronous loading the same type yet again.
-template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV>
+template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, bool load_nans=true>
 __device__ static inline void load_async_gather_indexed(ST &dst, const GL &src, const COORD &idx, const SV& row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARP_THREADS>(dst, src, idx, row_indices, bar);
+    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARP_THREADS, load_nans>(dst, src, idx, row_indices, bar);
 }
 
 
-template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV>
+template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, bool load_nans=true>
 __device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const GL &src, const COORD &idx, const SV& row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARPGROUP_THREADS>(dst, src, idx, row_indices, bar);
+    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, row_indices, bar);
 }
 
 
 
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
-template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, int N_THREADS=kittens::WARP_THREADS>
+template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, int N_THREADS=kittens::WARP_THREADS, bool load_nans=true>
 __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COORD& idx, const int kv_idx, kittens::semaphore& bar) {
 
     using T = typename ST::dtype;
@@ -184,8 +218,13 @@ __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COO
                 // float4 zeros = {0.f, 0.f, 0.f, 0.f};
                 // kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
                 // float4 nans = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F};
-                float4 nans = get_nans_16bytes<T>();
-                kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), nans);
+                if constexpr (load_nans){
+                    float4 nans = get_nans_16bytes<T>();
+                    kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), nans);
+                } else {
+                    float4 zeros = get_zeros_16bytes<T>();
+                    kittens::move<float4>::sts(dst.idx(dst_ptr, {row, col}), zeros);
+                }
             }
         }
     }
@@ -200,15 +239,15 @@ __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COO
 
 
 // overloaded function for asynchronous loading the same type yet again.
-template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
+template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, bool load_nans=true>
 __device__ static inline void load_async_warp(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
-    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARP_THREADS>(dst, src, idx, kv_idx, bar);
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARP_THREADS, load_nans>(dst, src, idx, kv_idx, bar);
 }
 
 
-template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
+template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, bool load_nans=true>
 __device__ static inline void load_async_warpgroup(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
-    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS>(dst, src, idx, kv_idx, bar);
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, kv_idx, bar);
 }
 
 

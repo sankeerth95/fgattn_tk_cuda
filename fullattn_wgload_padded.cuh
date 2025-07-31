@@ -125,10 +125,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
     }
 
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
-      asyncload::load_async_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, true>(
+        k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]
+      );
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup<v_tile, globals_fwd<D>::v_gl, kittens::coord<v_tile>, false>(
+        v_smem[stage], g.v, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, v_loaded_to_smem[stage]
+      );
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
     }
   }
@@ -142,10 +146,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       int prev_kv_idx = next_kv_idx - 1;
       int prev_stage = prev_kv_idx % stages;
 
-      asyncload::load_async_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, true>(
+        k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]
+      );
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, next_kv_idx * params_fwd<D>::kv_height, v_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup<v_tile, globals_fwd<D>::v_gl, kittens::coord<v_tile>, false>(
+        v_smem[stage], g.v, {batch, head, 0, 0}, next_kv_idx * params_fwd<D>::kv_height, v_loaded_to_smem[stage]
+      );
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
       kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
@@ -242,8 +250,7 @@ void attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v) {
 
   globals_fwd<D> g{q, k, v, o, seq_len};
   constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
-
-  int block_per_head = (seq_len + qo_producerblock - 1)/qo_producerblock;
+  constexpr int block_per_head = (seq_len + qo_producerblock - 1)/qo_producerblock;
 
   dim3 num_blocks(block_per_head, heads, batch);
   int num_threads = NUM_WARPS*WARP_SIZE;

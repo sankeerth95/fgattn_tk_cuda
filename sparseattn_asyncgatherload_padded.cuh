@@ -138,10 +138,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       padutils::load_indices(indices_smem, g.idxs, {batch, head, seq_block, stage}, num_kv_indices); // TODO: CHECK
       warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
       
-      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, indices_sv, true>(
+        k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]
+      );
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, indices_smem, v_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup<v_tile, globals_fwd<D>::v_gl, kittens::coord<v_tile>, indices_sv, false>(
+        v_smem[stage], g.v, {batch, head, 0, 0}, indices_smem, v_loaded_to_smem[stage]
+      );
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
     }
   }
@@ -158,10 +162,14 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       padutils::load_indices(indices_smem, g.idxs, {batch, head, seq_block, next_kv_idx}, num_kv_indices); // load indices to shmem. Still in critical path but yknow. each subserquent load is maximized.
       warpgroup::sync(warpgroupid); // sync producer warps. TODO: This worsk cuz num producer waprs = 1 right now.
 
-      asyncload::load_async_gather_indexed_warpgroup(k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, indices_sv, true>(
+        k_smem[stage], g.k, {batch, head, 0, 0}, indices_smem, k_loaded_to_smem[stage]
+      );
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
-      asyncload::load_async_gather_indexed_warpgroup(v_smem[stage], g.v, {batch, head, 0, 0}, indices_smem, v_loaded_to_smem[stage]);
+      asyncload::load_async_gather_indexed_warpgroup<v_tile, globals_fwd<D>::v_gl, kittens::coord<v_tile>, indices_sv, false>(
+        v_smem[stage], g.v, {batch, head, 0, 0}, indices_smem, v_loaded_to_smem[stage]
+      );
       kittens::arrive(v_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
       kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
@@ -256,7 +264,7 @@ void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, i
   typename globals_fwd<D>::v_gl v{d_v, batch, heads, seq_len, D};
   typename globals_fwd<D>::o_gl o{d_o, batch, heads, seq_len, D};
   constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
-  constexpr int block_per_head = seq_len/qo_producerblock;
+  constexpr int block_per_head = (seq_len + qo_producerblock - 1)/qo_producerblock;
   typename globals_fwd<D>::idx_gl idxs{d_idxs, batch, heads, block_per_head, seq_len};
 
   globals_fwd<D> g{q, k, v, o, idxs, d_maxidxs, seq_len};

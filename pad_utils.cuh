@@ -6,19 +6,17 @@
 namespace padutils {
 
 struct nan_to_neginfty_op {
-    template<typename T> static __device__ inline T op(const T &x) { 
-      return isnan(x)? kittens::base_types::constants<T>::neg_infty() : x;
-    }
+    template<typename T> static __device__ inline T op(const T &x);
 };
 
 template<> __device__ inline float nan_to_neginfty_op::op<float> (const float &x) {
-      return isnan(x)? kittens::base_types::constants<float>::neg_infty() : x;
+  return isnan(x)? kittens::base_types::constants<float>::neg_infty() : x;
 }
 
 template<> __device__ inline float2 nan_to_neginfty_op::op<float2> (const float2 &x) {
-    float f1 = isnan(x.x)? kittens::base_types::constants<float>::neg_infty() : x.x;
-    float f2 = isnan(x.y)? kittens::base_types::constants<float>::neg_infty() : x.y;
-    return float2{f1, f2};
+  float f1 = isnan(x.x)? kittens::base_types::constants<float>::neg_infty() : x.x;
+  float f2 = isnan(x.y)? kittens::base_types::constants<float>::neg_infty() : x.y;
+  return float2{f1, f2};
 }
 
 template<kittens::ducks::rt::all T>
