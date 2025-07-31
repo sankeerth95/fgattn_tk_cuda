@@ -2,11 +2,21 @@
 #include <cuda_bf16.h>
 
 void attn_fwd_wg_impl(
-    __nv_bfloat16* o, 
-    __nv_bfloat16* q, 
-    __nv_bfloat16* k, 
-    __nv_bfloat16* v,
-    int batch, int heads, int seq, int D
+   __nv_bfloat16* o, __nv_bfloat16* q, __nv_bfloat16* k, __nv_bfloat16* v,
+  int batch, int heads, int seq, int D
+);
+
+
+void attn_sparse_fwd_wg_impl(
+   __nv_bfloat16* o, __nv_bfloat16* q, __nv_bfloat16* k, __nv_bfloat16* v,
+  int* kv_indices, int* num_kv_indices,
+  int batch, int heads, int seq, int D
+);
+
+
+void allindex_mask_impl(
+  int* kv_indices, int* num_kv_indices,
+  int batch, int heads, int seqblocks, int seq
 );
 
 void full_attn_fwd(
@@ -17,7 +27,6 @@ void full_attn_fwd(
 ) {
   using scalar_t = typename at::BFloat16;
   using kernel_native_t = __nv_bfloat16;
-
 
   int batch = q.size(0);
   int heads = q.size(1);
@@ -34,11 +43,54 @@ void full_attn_fwd(
 }
 
 
+void all_index_mask(
+  torch::Tensor kv_indices,
+  torch::Tensor kv_num_indices,
+  int batch, int heads, int seqblocks, int seq
+){
+  using scalar_t = int;
+  allindex_mask_impl(
+      kv_indices.data_ptr<scalar_t>(),
+      kv_num_indices.data_ptr<scalar_t>(),
+      batch, heads, seqblocks, seq
+  );
+}
+
+
+void sparse_attn_indexed_fwd(
+    torch::Tensor o,
+    torch::Tensor q,
+    torch::Tensor k,
+    torch::Tensor v,
+    torch::Tensor kv_indices,
+    torch::Tensor kv_num_indices
+) {
+  using scalar_t = typename at::BFloat16;
+  using kernel_native_t = __nv_bfloat16;
+
+  
+  int batch = q.size(0);
+  int heads = q.size(1);
+  int seq = q.size(2);
+  int D = q.size(3);
+
+  attn_sparse_fwd_wg_impl(
+      reinterpret_cast<kernel_native_t*>(o.data_ptr<scalar_t>()),
+      reinterpret_cast<kernel_native_t*>(q.data_ptr<scalar_t>()),
+      reinterpret_cast<kernel_native_t*>(k.data_ptr<scalar_t>()),
+      reinterpret_cast<kernel_native_t*>(v.data_ptr<scalar_t>()),
+      kv_indices.data_ptr<int>(),
+      kv_num_indices.data_ptr<int>(),
+      batch, heads, seq, D
+  );
+}
+
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("full_attn", &full_attn_fwd, "Full attention");
-    // m.def("sp_attn", &sparse_attn_indexed_fwd, "Sparse attention");
-    // m.def("allindexmask", &all_index_mask, "all index mask");
+    m.def("sp_attn", &sparse_attn_indexed_fwd, "Sparse attention");
+    m.def("all_index_mask", &all_index_mask, "all index mask");
 }
 
 

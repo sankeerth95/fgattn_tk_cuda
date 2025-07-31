@@ -3,3 +3,6 @@
 *.d
 *.ncu-rep
 *.nsys-rep
+build/
+*.egg-info
+*.so

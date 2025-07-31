@@ -1,3 +1,6 @@
+#pragma once
+
+#include "kittens.cuh"
 
 
 namespace asyncload {

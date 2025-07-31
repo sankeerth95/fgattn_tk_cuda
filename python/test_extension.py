@@ -24,8 +24,6 @@ def test_attn_impls(seq_len_):
     interface.full_attn(o.contiguous(), q.contiguous(), k.contiguous(), v.contiguous())
     torch.cuda.synchronize()
 
-
-    ##
     expected_torch_flashattn = torch.nn.functional.scaled_dot_product_attention(q, k, v)
     expected_torch_flashattn_f32 = torch.nn.functional.scaled_dot_product_attention(
         q.to(dtype=torch.float),
@@ -33,33 +31,33 @@ def test_attn_impls(seq_len_):
         v.to(dtype=torch.float),
     )
 
-    # scale_factor =  1. / (128 ** 0.5)
-    # expected = torch.einsum("bhqd,bhkd->bhqk", q, k) * scale_factor 
-    # expected = torch.nn.functional.softmax(expected, dim=-1)
-    # expected = torch.einsum("bhqk,bhkd->bhqd", expected, v)
-
-    # maxdiff = torch.max(torch.abs(o - expected_torch_flashattn))
-    # print(f"Max difference between torch falshattn and mine: {maxdiff.item()}")
-
-    # maxdiff = torch.max(torch.abs(expected - o))
-    # print(f"Max difference between python and mine: {maxdiff.item()}")
-
     maxdiff = torch.max(torch.abs(o - expected_torch_flashattn))
     print(f"Max difference between mine and torch implementations: {maxdiff.item()}")
 
     maxdiff = torch.max(torch.abs(o - expected_torch_flashattn_f32))
     print(f"Max difference between mine and torch32 implementations: {maxdiff.item()}")
 
-    # maxdiff = torch.max(torch.abs(o_sparse_attn - expected_torch_flashattn))
-    # print(f"Max difference between my_sparse_attn and torch implementations: {maxdiff.item()}")
 
-    # maxdiff = torch.max(torch.abs(o_sparse_attn - expected_torch_flashattn_f32))
-    # print(f"Max difference between my sparse attn and torch32 implementations: {maxdiff.item()}")
+    seqblocks = 32768//64
+    kv_indices = torch.empty([batch, heads, seqblocks, seq_len], device='cuda', dtype=torch.int)
+    kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
+    interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
+    torch.cuda.synchronize()
 
-    # maxdiff = torch.max(torch.abs(expected_torch_flashattn - expected_torch_flashattn_f32))
-    # print(f"Max difference between torchbf16 and torch32 implementations: {maxdiff.item()}")
+    print(kv_indices)
+    print(kv_num_indices)
 
-    machine_epsilon_bf16 = 0.0078125 # 2e-7
+    o_sparse = torch.empty_like(q)
+    interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices, kv_num_indices)
+    torch.cuda.synchronize()
+
+
+    maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn))
+    print(f"Max difference between sparse and torch implementations: {maxdiff.item()}")
+
+    maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn_f32))
+    print(f"Max difference between sparse and torch32 implementations: {maxdiff.item()}")
+
 
 
 if __name__ == "__main__":

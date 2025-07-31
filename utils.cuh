@@ -1,5 +1,10 @@
 #pragma once
 
+#include <iostream>
+#include <random>
+#include <algorithm>
+#include <cuda_bf16.h>
+
 
 template<typename T, int b, int h, int s, int d>
 T* init_with_randn_values(float* h_matrix) { 
@@ -40,11 +45,11 @@ T* init_empty_array(){
 template<int batches, int heads, int seqblocks, int seq>
 std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_ptr) {
   using ArrayType = int[batches][heads][seqblocks][seq];
-  using MaxIndexArrayType = int[batches][heads][seqblocks];
+  using NumIndexArrayType = int[batches][heads][seqblocks];
   ArrayType *h_indices_array_ptr = reinterpret_cast<ArrayType*>(h_indices_ptr);
   ArrayType &h_indices = *h_indices_array_ptr;
-  MaxIndexArrayType *h_maxindex_array_ptr = reinterpret_cast<MaxIndexArrayType*>(h_maxindex_ptr);
-  MaxIndexArrayType &h_maxindex = *h_maxindex_array_ptr;
+  NumIndexArrayType *h_maxindex_array_ptr = reinterpret_cast<NumIndexArrayType*>(h_maxindex_ptr);
+  NumIndexArrayType &h_maxindex = *h_maxindex_array_ptr;
 
   for (int b = 0; b < batches; b++){  
     for(int h = 0; h < heads; h++) {
@@ -59,22 +64,45 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
   int* d_indices;
   int* d_maxidxs;
   cudaMalloc(&d_indices, sizeof(ArrayType));
-  cudaMalloc(&d_maxidxs, sizeof(MaxIndexArrayType));
+  cudaMalloc(&d_maxidxs, sizeof(NumIndexArrayType));
   cudaMemcpy(d_indices, h_indices_ptr, sizeof(ArrayType), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_maxidxs, h_maxindex_ptr, sizeof(MaxIndexArrayType), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_maxidxs, h_maxindex_ptr, sizeof(NumIndexArrayType), cudaMemcpyHostToDevice);
   return {d_indices, d_maxidxs};
 }
+
+template<int batches, int heads, int seqblocks, int seq>
+std::pair<int*, int*> init_allindex_array_noinit(int* d_indices, int* d_maxidxs) {
+  using ArrayType = int[batches][heads][seqblocks][seq];
+  using NumIndexArrayType = int[batches][heads][seqblocks];
+  ArrayType h_indices;
+  NumIndexArrayType h_maxindex;
+
+  for (int b = 0; b < batches; b++){  
+    for(int h = 0; h < heads; h++) {
+      for (int seqblock = 0; seqblock < seqblocks; seqblock++) {
+        for (int s = 0; s < seq; s++) {
+          h_indices[b][h][seqblock][s] = s;
+        }
+        h_maxindex[b][h][seqblock] = seq;
+      }
+    }
+  }
+  cudaMemcpy(d_indices, &h_indices[0][0][0][0], sizeof(ArrayType), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_maxidxs, &h_maxindex[0][0][0], sizeof(NumIndexArrayType), cudaMemcpyHostToDevice);
+  return {d_indices, d_maxidxs};
+}
+
 
 
 
 template<int batches, int heads, int seqblocks, int seq>
 std::pair<int*, int*> init_halfindex_array(int* h_indices_ptr, int* h_maxindex_ptr) {
   using ArrayType = int[batches][heads][seqblocks][seq];
-  using MaxIndexArrayType = int[batches][heads][seqblocks];
+  using NumIndexArrayType = int[batches][heads][seqblocks];
   ArrayType *h_indices_array_ptr = reinterpret_cast<ArrayType*>(h_indices_ptr);
   ArrayType &h_indices = *h_indices_array_ptr;
-  MaxIndexArrayType *h_maxindex_array_ptr = reinterpret_cast<MaxIndexArrayType*>(h_maxindex_ptr);
-  MaxIndexArrayType &h_maxindex = *h_maxindex_array_ptr;
+  NumIndexArrayType *h_maxindex_array_ptr = reinterpret_cast<NumIndexArrayType*>(h_maxindex_ptr);
+  NumIndexArrayType &h_maxindex = *h_maxindex_array_ptr;
 
   for (int b = 0; b < batches; b++){  
     for(int h = 0; h < heads; h++) {
@@ -89,9 +117,9 @@ std::pair<int*, int*> init_halfindex_array(int* h_indices_ptr, int* h_maxindex_p
   int* d_indices;
   int* d_maxidxs;
   cudaMalloc(&d_indices, sizeof(ArrayType));
-  cudaMalloc(&d_maxidxs, sizeof(MaxIndexArrayType));
+  cudaMalloc(&d_maxidxs, sizeof(NumIndexArrayType));
   cudaMemcpy(d_indices, h_indices_ptr, sizeof(ArrayType), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_maxidxs, h_maxindex_ptr, sizeof(MaxIndexArrayType), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_maxidxs, h_maxindex_ptr, sizeof(NumIndexArrayType), cudaMemcpyHostToDevice);
   return {d_indices, d_maxidxs};
 }
 
