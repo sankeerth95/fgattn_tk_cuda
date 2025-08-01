@@ -74,7 +74,7 @@ void benchmark_kernel(){
 
   constexpr int batches = 1;
   constexpr int heads = 12;
-  constexpr int seq = 32768;
+  constexpr int seq = 32760;
   constexpr int dims = 128;
 
   constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;

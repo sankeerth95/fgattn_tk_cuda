@@ -34,9 +34,8 @@ __device__ static inline void load_indices(SV &dst, const GL &src, const COORD &
     for(int iter = 0, i = ::kittens::laneid(); iter < total_calls; iter++, i+=kittens::WARP_THREADS) {
         if(i * elem_per_transfer < dst.length) {
             // printf("%d\n", (int)idx.c);
-            // if ( idx.c + i*elem_per_transfer < num_indices) {
-            // TODO: fix this 
-            if ( true ) {
+            // if ( true ) {
+            if ( (idx.template dim<3>())*SV::length + i*elem_per_transfer < num_indices ) {
                 float4 tmp;
                 kittens::move<float4>::ldg(tmp, (float4*)&src_ptr[i*elem_per_transfer]);
                 kittens::move<float4>::sts(dst_ptr + sizeof(typename SV::dtype)*i*elem_per_transfer, tmp);
