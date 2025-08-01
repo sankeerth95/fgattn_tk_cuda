@@ -1,5 +1,7 @@
 import torch
 import spattn_interface
+import mask_utils
+
 
 def test_attn_impls(seq_len_):
     batch = 1
@@ -23,13 +25,12 @@ def test_attn_impls(seq_len_):
     spattn_interface.full_attn(o, q.contiguous(), k.contiguous(), v.contiguous())
     torch.cuda.synchronize()
 
-    print(f"num nans: {o.isnan().sum()} out of {o.numel()}")
-
     maxdiff = torch.max(torch.abs(o - expected_torch_flashattn))
-    print(f"Max difference between mine and torch implementations: {maxdiff.item()}")
-
     maxdiff = torch.max(torch.abs(o - expected_torch_flashattn_f32))
+    print(f"num nans: {o.isnan().sum()} out of {o.numel()}")
+    print(f"Max difference between mine and torch implementations: {maxdiff.item()}")
     print(f"Max difference between mine and torch32 implementations: {maxdiff.item()}")
+    print('##########################################################')
     print('')
 
 
@@ -42,15 +43,16 @@ def test_attn_impls(seq_len_):
     spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices, kv_num_indices)
     torch.cuda.synchronize()
 
+
+
     # print(kv_indices)
     # print(kv_num_indices)
-    print(f"num nans: {o_sparse.isnan().sum()} out of {o_sparse.numel()}")
-
     maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn))
-    print(f"Max difference between sparse and torch implementations: {maxdiff.item()}")
-
     maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn_f32))
+    print(f"num nans: {o_sparse.isnan().sum()} out of {o_sparse.numel()}")
+    print(f"Max difference between sparse and torch implementations: {maxdiff.item()}")
     print(f"Max difference between sparse and torch32 implementations: {maxdiff.item()}")
+    print('##########################################################')
     print('')
 
 

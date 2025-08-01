@@ -13,7 +13,7 @@ void attn_fwd_wg_impl (
     full_attn_wgload::attn_fwd_cu_impl<1, 12, 32768, 128>(o, q, k, v); 
   }
   else {
-    printf("kernel not found\n");
+    printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
     assert(false);
     // ... 
   }
@@ -30,7 +30,7 @@ void attn_sparse_fwd_wg_impl (
   } else if (batch == 1 && heads == 12 && seq == 32768 && D == 128) {
     async_gather_attn::async_gather_attn_fwd_cu_impl<1, 12, 32768, 128>(o, q, k, v, kv_indices, num_kv_indices);
   } else {
-    printf("kernel not found\n");
+    printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
     assert(false);
     // ... 
   }
