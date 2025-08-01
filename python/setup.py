@@ -42,9 +42,10 @@ cpp_flags = [
 
 setuptools.setup(
     name='spattn',
+    packages=setuptools.find_packages(),
     ext_modules=[
         CUDAExtension(
-            name="spattn_interface",
+            name="spattn.cuda_attn",
             include_dirs=[
                 os.path.join(project_root, "./"),
                 os.path.join(thunderkittens_root, "include"),

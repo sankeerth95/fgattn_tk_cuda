@@ -1,6 +1,6 @@
 import torch
-import spattn_interface
-import mask_utils
+import spattn.cuda_attn as spattn_interface
+import spattn.mask_utils as mask_utils
 
 
 def test_attn_impls(seq_len_):
@@ -35,12 +35,18 @@ def test_attn_impls(seq_len_):
 
 
     print('################# Running full attention #################')
-    seqblocks = (seq_len + 128 - 1)//128
-    kv_indices = torch.empty([batch, heads, seqblocks, seq_len], device='cuda', dtype=torch.int)
-    kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
+    BLOCKSZ = 128
+    cpp_mask = False
     o_sparse = torch.empty_like(q)
-    spattn_interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
-    spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices, kv_num_indices)
+    if cpp_mask:
+        seqblocks = (seq_len + BLOCKSZ - 1)//BLOCKSZ
+        kv_indices = torch.empty([batch, heads, seqblocks, seq_len], device='cuda', dtype=torch.int)
+        kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
+        spattn_interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
+    else:
+        kv_indices, kv_num_indices = mask_utils.get_allindex_mask(batch, heads, seq_len, BLOCKSZ)
+    
+    spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
     torch.cuda.synchronize()
 
 
