@@ -64,7 +64,7 @@ void benchmark_kernel(){
 
   constexpr int batches = 1;
   constexpr int heads = 12;
-  constexpr int seq = 32768;
+  constexpr int seq = 32760;
   constexpr int dims = 128;
   constexpr int NITERS = 20;
 
