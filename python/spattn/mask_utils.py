@@ -10,6 +10,15 @@ def get_allindex_mask(B: int, H: int, S: int, BLOCKSZ: int):
     return kv_indices, kv_num_indices
 
 
+def get_allrandompermutation_mask(B: int, H: int, S: int, BLOCKSZ: int):
+    num_blocks = (S + BLOCKSZ - 1) // BLOCKSZ
+    kv_num_indices = torch.full((B, H, num_blocks), S, device='cuda', dtype=torch.int32)
+    indices = torch.randperm(S, device='cuda', dtype=torch.int32)
+    kv_indices = indices.expand(B, H, num_blocks, S).contiguous()
+    return kv_indices, kv_num_indices
+
+
+
 def get_halfindex_mask(B: int, H: int, S: int, BLOCKSZ: int):
     num_blocks = (S + BLOCKSZ - 1) // BLOCKSZ
     indices = 2*torch.arange(S//2, device='cuda', dtype=torch.int32)
@@ -47,9 +56,11 @@ def get_topkindex_indices(q, k, select_k, B: int, H: int, S: int, D: int, BLOCKS
 
     seq_by_blksz = (S + BLOCKSZ - 1) // BLOCKSZ
     qsdotk_ = qmeandotk(q, k)
-    topk = torch.topk(qsdotk_, select_k, dim=-1, sorted=False) # sorting slows it down a lot!
+    topk = torch.topk(qsdotk_, select_k, dim=-1, sorted=True) # sorting slows it down a lot!
+    kv_indices = topk.indices.to(torch.int32)
+    print(kv_indices)
     kv_num_indices = torch.full([B, H, seq_by_blksz], select_k, device=topk.indices.device, dtype=torch.int32)
-    return topk.indices, kv_num_indices
+    return kv_indices, kv_num_indices
 
 
 

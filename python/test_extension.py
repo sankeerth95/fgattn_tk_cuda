@@ -1,4 +1,5 @@
 import torch
+import time
 import spattn.cuda_attn as spattn_interface
 import spattn.mask_utils as mask_utils
 
@@ -39,11 +40,13 @@ def test_attn_impls(seq_len_):
     cpp_mask = False
     o_sparse = torch.empty_like(q)
     if cpp_mask:
+        print('using cpp kenel mask')
         seqblocks = (seq_len + BLOCKSZ - 1)//BLOCKSZ
         kv_indices = torch.empty([batch, heads, seqblocks, seq_len], device='cuda', dtype=torch.int)
         kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
         spattn_interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
     else:
+        print('using torch mask')
         kv_indices, kv_num_indices = mask_utils.get_allindex_mask(batch, heads, seq_len, BLOCKSZ)
     
     spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
@@ -60,6 +63,20 @@ def test_attn_impls(seq_len_):
     print(f"Max difference between sparse and torch32 implementations: {maxdiff.item()}")
     print('##########################################################')
     print('')
+
+
+
+    kv_indices, kv_num_indices = mask_utils.get_allrandompermutation_mask(batch, heads, seq_len, BLOCKSZ)
+    N = 200
+    torch.cuda.synchronize()
+    start = time.time()
+    for _ in range(N):
+        o =  spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
+    torch.cuda.synchronize()
+    end = time.time()
+    print((end - start)/N, 's')
+
+
 
 
 
