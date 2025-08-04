@@ -267,16 +267,16 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
 
 template<int batch, int heads, int seq_len, int D>
-void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, int* d_maxidxs) {
+void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, int* d_idxs, int* d_maxidxs, const size_t mask_stride=seq_len) {
   typename globals_fwd<D>::q_gl q{d_q, batch, heads, seq_len, D};
   typename globals_fwd<D>::k_gl k{d_k, batch, heads, seq_len, D};
   typename globals_fwd<D>::v_gl v{d_v, batch, heads, seq_len, D};
   typename globals_fwd<D>::o_gl o{d_o, batch, heads, seq_len, D};
   constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
+  static_assert(seq_len % qo_producerblock == 0, "seq_len must be a multiple of qo_producerblock");
   constexpr int block_per_head = seq_len/qo_producerblock;
-  typename globals_fwd<D>::idx_gl idxs{d_idxs, batch, heads, block_per_head, seq_len};
+  typename globals_fwd<D>::idx_gl idxs{d_idxs, batch, heads, block_per_head, mask_stride};
   
-
   globals_fwd<D> g{q, k, v, o, idxs, d_maxidxs, seq_len};
   dim3 num_blocks(block_per_head, heads, batch);
   int num_threads = NUM_WARPS*WARP_SIZE;

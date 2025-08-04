@@ -8,6 +8,7 @@ def test_attn_impls(seq_len_):
     batch = 1
     heads = 12
     seq_len = seq_len_
+    mask_stride = ((seq_len + 128 - 1) // 128) * 128
     D = 128
 
     q = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
@@ -35,19 +36,19 @@ def test_attn_impls(seq_len_):
     print('')
 
 
-    print('################# Running full attention #################')
+    print('################# Running sparse attention #################')
     BLOCKSZ = 128
     cpp_mask = False
     o_sparse = torch.empty_like(q)
     if cpp_mask:
         print('using cpp kenel mask')
         seqblocks = (seq_len + BLOCKSZ - 1)//BLOCKSZ
-        kv_indices = torch.empty([batch, heads, seqblocks, seq_len], device='cuda', dtype=torch.int)
+        kv_indices = torch.empty([batch, heads, seqblocks, mask_stride], device='cuda', dtype=torch.int)
         kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
         spattn_interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
     else:
         print('using torch mask')
-        kv_indices, kv_num_indices = mask_utils.get_allindex_mask(batch, heads, seq_len, BLOCKSZ)
+        kv_indices, kv_num_indices = mask_utils.get_allindex_mask(batch, heads, mask_stride, BLOCKSZ)
     
     spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
     torch.cuda.synchronize()
@@ -66,7 +67,7 @@ def test_attn_impls(seq_len_):
 
 
 
-    kv_indices, kv_num_indices = mask_utils.get_allrandompermutation_mask(batch, heads, seq_len, BLOCKSZ)
+    kv_indices, kv_num_indices = mask_utils.get_allrandompermutation_mask(batch, heads, mask_stride, BLOCKSZ)
     N = 200
     torch.cuda.synchronize()
     start = time.time()

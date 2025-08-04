@@ -1,5 +1,6 @@
 #include "fullattn_wgload_padded.cuh"
 #include "sparseattn_asyncgatherload_padded.cuh"
+#include "thresholdmask.cuh"
 #include "utils.cuh"
 
 
@@ -24,15 +25,18 @@ void attn_fwd_wg_impl (
 
 void attn_sparse_fwd_wg_impl (
     async_gather_attn::bf16* o, async_gather_attn::bf16* q, async_gather_attn::bf16* k, async_gather_attn::bf16* v,
-    int* kv_indices, int* num_kv_indices,
+    int* kv_indices, int* num_kv_indices, int mask_stride,
     int batch, int heads, int seq, int D
 ) {
   if (batch == 1 && heads == 12 && seq == 32760 && D == 128){
-    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 12, 32760, 128>(o, q, k, v, kv_indices, num_kv_indices);
+    assert(mask_stride % 128 == 0);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 12, 32760, 128>(o, q, k, v, kv_indices, num_kv_indices, mask_stride);
   } else if (batch == 1 && heads == 12 && seq == 32768 && D == 128) {
-    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 12, 32768, 128>(o, q, k, v, kv_indices, num_kv_indices);
+    assert(mask_stride % 128 == 0);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 12, 32768, 128>(o, q, k, v, kv_indices, num_kv_indices, mask_stride);
   } else if (batch == 1 && heads == 40 && seq == 32760 && D == 128) {
-    full_attn_wgload::attn_fwd_cu_impl<1, 40, 32760, 128>(o, q, k, v); 
+    assert(mask_stride % 128 == 0);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 40, 32760, 128>(o, q, k, v, kv_indices, num_kv_indices, mask_stride); 
   } else {
     printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
     assert(false);
@@ -45,14 +49,13 @@ void allindex_mask_impl(
     int* kv_indices, int* num_kv_indices,
     int batch, int heads, int seqblocks, int seq
 ) {
-    
     if(batch == 1 && heads == 12 && seq == 32760 && seqblocks == ((32760 + 128 - 1)/128)){
-        init_allindex_array_noinit<1, 12, (32760 + 128 - 1)/128, 32760>(
-            kv_indices, num_kv_indices
+        init_allindex_array_noinit<1, 12, (32760 + 128 - 1)/128, 32768>(
+            kv_indices, num_kv_indices, 32760
         );
     } else if(batch == 1 && heads == 12 && seq == 32768 && seqblocks == ((32768 + 128 - 1)/128)){
         init_allindex_array_noinit<1, 12, (32768 + 128 - 1)/128, 32768>(
-            kv_indices, num_kv_indices
+            kv_indices, num_kv_indices, 32768
         );
     }
      else {
@@ -60,6 +63,31 @@ void allindex_mask_impl(
         assert(false);
     }
 }
+
+
+void attnmask_16_impl(
+    float* d_o_max_q, float* d_o_max_k, float* d_o_norm, 
+    thresholdmask::bf16* d_q, thresholdmask::bf16* d_k,
+    int batch, int heads, int seq, int D
+) {  
+    if (batch == 1 && heads == 12 && seq == 32760 && D == 128){
+      thresholdmask::thresh_mask_cu_impl<1, 12, 32760, 128>(
+          d_o_max_q, d_o_max_k, d_o_norm, d_q, d_k
+      );
+    } else if (batch == 1 && heads == 12 && seq == 32768 && D == 128){
+      thresholdmask::thresh_mask_cu_impl<1, 12, 32768, 128>(
+          d_o_max_q, d_o_max_k, d_o_norm, d_q, d_k
+      );
+    }
+    else {
+      printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
+      assert(false);
+    }
+}
+
+
+
+
 
 
 

@@ -41,9 +41,8 @@ T* init_empty_array(){
 }
 
 
-
 template<int batches, int heads, int seqblocks, int seq>
-std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_ptr) {
+std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_ptr, int max_num_kv_idx) {
   using ArrayType = int[batches][heads][seqblocks][seq];
   using NumIndexArrayType = int[batches][heads][seqblocks];
   ArrayType *h_indices_array_ptr = reinterpret_cast<ArrayType*>(h_indices_ptr);
@@ -57,7 +56,7 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
         for (int s = 0; s < seq; s++) {
           h_indices[b][h][seqblock][s] = s;
         }
-        h_maxindex[b][h][seqblock] = seq;
+        h_maxindex[b][h][seqblock] = max_num_kv_idx;
       }
     }
   }
@@ -70,8 +69,9 @@ std::pair<int*, int*> init_allindex_array(int* h_indices_ptr, int* h_maxindex_pt
   return {d_indices, d_maxidxs};
 }
 
+
 template<int batches, int heads, int seqblocks, int seq>
-std::pair<int*, int*> init_allindex_array_noinit(int* d_indices, int* d_maxidxs) {
+std::pair<int*, int*> init_allindex_array_noinit(int* d_indices, int* d_maxidxs, int max_num_kv_idx) {
   using ArrayType = int[batches][heads][seqblocks][seq];
   using NumIndexArrayType = int[batches][heads][seqblocks];
   ArrayType h_indices;
@@ -83,7 +83,7 @@ std::pair<int*, int*> init_allindex_array_noinit(int* d_indices, int* d_maxidxs)
         for (int s = 0; s < seq; s++) {
           h_indices[b][h][seqblock][s] = s;
         }
-        h_maxindex[b][h][seqblock] = seq;
+        h_maxindex[b][h][seqblock] = max_num_kv_idx;
       }
     }
   }
@@ -93,10 +93,8 @@ std::pair<int*, int*> init_allindex_array_noinit(int* d_indices, int* d_maxidxs)
 }
 
 
-
-
 template<int batches, int heads, int seqblocks, int seq>
-std::pair<int*, int*> init_halfindex_array(int* h_indices_ptr, int* h_maxindex_ptr) {
+std::pair<int*, int*> init_halfindex_array(int* h_indices_ptr, int* h_maxindex_ptr, int max_num_kv_idx) {
   using ArrayType = int[batches][heads][seqblocks][seq];
   using NumIndexArrayType = int[batches][heads][seqblocks];
   ArrayType *h_indices_array_ptr = reinterpret_cast<ArrayType*>(h_indices_ptr);
@@ -110,7 +108,7 @@ std::pair<int*, int*> init_halfindex_array(int* h_indices_ptr, int* h_maxindex_p
         for (int s = 0; s < seq/2; s++) {
           h_indices[b][h][seqblock][s] = 2*s;
         }
-        h_maxindex[b][h][seqblock] = seq/2;
+        h_maxindex[b][h][seqblock] = max_num_kv_idx;
       }
     }
   }

@@ -14,6 +14,7 @@ void test_kernel() {
   constexpr int batches = 1;
   constexpr int heads = 12;
   constexpr int seq = 32768;
+  constexpr size_t mask_stride = 32768; 
   constexpr int dims = 128;
   constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
   constexpr int seqblocks = seq / qoblocksize_;
@@ -33,14 +34,14 @@ void test_kernel() {
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
+  auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, mask_stride>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0], seq);
 
   cudaError_t err2 = cudaDeviceSynchronize();
   if (err2 != cudaSuccess) {
     printf("___CUDA error: %s\n", cudaGetErrorString(err2));
   }
 
-  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, d_kv_idxs, d_kv_numidxs);
+  async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, d_kv_idxs, d_kv_numidxs, mask_stride);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -75,6 +76,7 @@ void benchmark_kernel(){
   constexpr int batches = 1;
   constexpr int heads = 12;
   constexpr int seq = 32768;
+  constexpr size_t mask_stride = 32768;
   constexpr int dims = 128;
 
   constexpr int qoblocksize_ = async_gather_attn::params_fwd<dims>::qo_height*async_gather_attn::CONSUMER_WARPGROUPS;
@@ -92,8 +94,8 @@ void benchmark_kernel(){
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
   bf16* d_V = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_V[0][0][0][0]));
-  auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
-  // auto [d_kv_idxs, d_kv_numidxs] = init_halfindex_array<batches, heads, seqblocks, seq>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0]);
+  auto [d_kv_idxs, d_kv_numidxs] = init_allindex_array<batches, heads, seqblocks, mask_stride>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0], seq);
+  // auto [d_kv_idxs, d_kv_numidxs] = init_halfindex_array<batches, heads, seqblocks, mask_stride>(&h_kv_idxs[0][0][0][0], &h_kv_numidxs[0][0][0], seq/2);
 
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -102,7 +104,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, d_kv_idxs, d_kv_numidxs);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<batches, heads, seq, dims>(d_O, d_Q, d_K, d_V, d_kv_idxs, d_kv_numidxs, mask_stride);
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);
@@ -122,7 +124,7 @@ void benchmark_kernel(){
 
 
 int main(){
-  for(int i = 0; i < 10; i++) test_kernel();
+  test_kernel();
   benchmark_kernel();
   return 0;
 }
