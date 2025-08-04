@@ -5,7 +5,7 @@ NVCC?=nvcc
 # NVCC?=/usr/local/cuda-12.6/bin/nvcc
 
 # Conditional setup based on the target GPU
-# NVCCFLAGS=-DNDEBUG -G -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math -Isubmodules/ThunderKittens/include -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose -Xptxas=--warn-on-spills -std=c++20 -MD -MT -MF -x cu -lrt -lpthread -ldl -DKITTENS_HOPPER -arch=sm_90a -lcuda -lcudadevrt -lcudart_static # H100
+# NVCCFLAGS=-DNDEBUG -G -lineinfo -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math -Isubmodules/ThunderKittens/include -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose -Xptxas=--warn-on-spills -std=c++20 -MD -MT -MF -x cu -lrt -lpthread -ldl -DKITTENS_HOPPER -arch=sm_90a -lcuda -lcudadevrt -lcudart_static # H100
 NVCCFLAGS=-DNDEBUG -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math -Isubmodules/ThunderKittens/include -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose -Xptxas=--warn-on-spills -std=c++20 -MD -MT -MF -x cu -lrt -lpthread -ldl -DKITTENS_HOPPER -arch=sm_90a -lcuda -lcudadevrt -lcudart_static # H100
 
 # 
@@ -18,6 +18,7 @@ TARGET=a.out # H100
 # SRC=test_fullattn_wgload_padded.cu # H100
 # SRC=test_sparseattn_asyncgatherload.cu # H100
 SRC=test_sparseattn_asyncgatherload_padded.cu # H100
+SRC=test_thresholdmask.cu # H100
 
 
 # Default target
