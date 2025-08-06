@@ -159,8 +159,41 @@ def qkattn_bitmask_cuda(q, k, thresh, blocksz=128):
         booleanmask, max_q.contiguous(), denom.contiguous(), 
         q.contiguous(), k.contiguous(), thresh
     )
-    return booleanmask[:, :, :, :seq] > 0
+    return booleanmask[:, :, :, :] > 0
 
+
+def bitmask_to_indexmask(booleanmask):
+    batch = booleanmask.shape[0]
+    heads = booleanmask.shape[1]
+    seq_blocks = booleanmask.shape[2]
+    mask_stride = booleanmask.shape[3]
+
+    indexmask = []
+    indexmask_counts = []
+    for batch in range(batch):
+        indexmask_in_batch = []
+        indexmask_in_batch_counts = []
+        for head in range(heads):
+            index_mask, counts = boolean_to_index_mask_2d(booleanmask[batch, head])
+            indexmask_in_batch.append(index_mask.unsqueeze(0))
+            indexmask_in_batch_counts.append(counts.unsqueeze(0))
+        indexmask.append(torch.concat(indexmask_in_batch).unsqueeze(0))
+        indexmask_counts.append(torch.concat(indexmask_in_batch_counts).unsqueeze(0))
+    return torch.concat(indexmask).to(torch.int), torch.concat(indexmask_counts).to(torch.int)
+
+
+
+def bitmask_to_indexmask_cuda(booleanmask):
+    batch = booleanmask.shape[0]
+    heads = booleanmask.shape[1]
+    seq_blocks = booleanmask.shape[2]
+    mask_stride = booleanmask.shape[3]
+    kv_indices = torch.full([batch, heads, seq_blocks, mask_stride], mask_stride, device='cuda', dtype=torch.int)
+    num_kv_indices = torch.zeros([batch, heads, seq_blocks], device='cuda', dtype=torch.int)
+    spattn_interface.booleanmask_to_indexmask(
+        kv_indices, num_kv_indices, booleanmask.contiguous()
+    )
+    return kv_indices, num_kv_indices
 
 
 def qkattn_indexmask_cuda(q, k, thresh, blocksz=128):
