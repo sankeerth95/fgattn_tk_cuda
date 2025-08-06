@@ -65,7 +65,7 @@ struct globals_fwd {
   norm_gl norm;
   booleanmask_gl booleanmask;
 
-  float threshold;
+  const float threshold;
   const int mask_stride;
   const int N;
 };
@@ -93,8 +93,9 @@ __device__ inline void atomicincr_store(GL& dst, const RV& src, const COORD &idx
             if(idx < src.outer_dim*16){
                 // *(U2*)&dst_ptr[idx] = base_types::convertor<U2, T2>::convert(src[o_dim][i_dim]);
                 float2 tmp = kittens::base_types::convertor<float2, T2>::convert(src[o_dim][i_dim]);
-                if(tmp.x > thresh) atomicAdd(&dst_ptr[idx], 1);
-                if(tmp.y > thresh) atomicAdd(&dst_ptr[idx+1], 1);
+                int2* dst2_ptr = (U2*)&dst_ptr[idx];
+                if(tmp.x > thresh) atomicAdd(&dst2_ptr->x, 1);
+                if(tmp.y > thresh) atomicAdd(&dst2_ptr->y, 1);
             }
         }
     }
@@ -202,24 +203,19 @@ __global__ void booleanmask_from_qk(__grid_constant__ const globals_fwd<D> g) {
   } else {
     warpgroup::increase_registers<120>();
 
+    constexpr float ln2inv = 1.44269504089f;
+    constexpr float scale_factor = ln2inv * 0.08838834764f; //0.08838834764f;  // 1.0f/sqrt(D)
     constexpr int qo_regtile = params_fwd<D>::qo_height/WARPGROUP_WARPS;
     static_assert(qo_regtile == 16, "qo_regtile must be 16");
     using attn_block_fragment_fl = rt_fl<qo_regtile, params_fwd<D>::kv_height>;
-    using attn_block_fragment_bf16 = rt_bf<qo_regtile, params_fwd<D>::kv_height>;
+
     attn_block_fragment_fl  qkt_block;
-
     typename attn_block_fragment_fl::row_vec max_k_reg;
-    // rv<float, params_fwd<D>::kv_height, kittens::naive_l> max_k_reg;
-
-    constexpr float ln2inv = 1.44269504089f;
-    constexpr float scale_factor = ln2inv * 0.08838834764f; //0.08838834764f;  // 1.0f/sqrt(D)
-
-    // now load these two attributes
     typename attn_block_fragment_fl::col_vec denom_vec_reg;
     typename attn_block_fragment_fl::col_vec max_vec_reg; 
     
-    kittens::load(max_vec_reg, g.max_q, {batch, head, 0, seq + warpgroupid});
-    kittens::load(denom_vec_reg, g.norm, {batch, head, 0, seq + warpgroupid});
+    warpgroup::load(max_vec_reg, g.max_q, {batch, head, 0, seq + warpgroupid});
+    warpgroup::load(denom_vec_reg, g.norm, {batch, head, 0, seq + warpgroupid});
 
     // wait for phase 0 to complete (init load.)
     kittens::wait(q_loaded_to_smem, 0);
@@ -237,7 +233,8 @@ __global__ void booleanmask_from_qk(__grid_constant__ const globals_fwd<D> g) {
       kittens::exp2(qkt_block, qkt_block);
       kittens::div_row(qkt_block, qkt_block, denom_vec_reg);  // broadcast op
 
-      kittens::col_max(max_k_reg, qkt_block); 
+      kittens::col_max(max_k_reg, qkt_block);
+      // printf("%d\n", max_k_reg.data[0][0])
       atomicincr_store(g.booleanmask, max_k_reg, {batch, head, seqblock, kv_idx}, g.threshold);
       
       if (warpgroup::laneid() == 0) kittens::arrive(compute_done[stage], 1);

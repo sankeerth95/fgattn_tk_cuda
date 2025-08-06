@@ -92,7 +92,26 @@ def boolean_to_index_mask_2d(boolean_mask):
     return index_mask.to(torch.int), idealmaskcounts.to(torch.int)
 
 
-def qkattn_masked(q, k, thresh=0.001, blocksz = 128):
+def qkattn_bitmask(q, k, thresh=0.001, blocksz = 128):
+    batches = q.shape[0]
+    numheads = q.shape[1]
+    seq_q = q.shape[2]
+    D = q.shape[3]
+    bitmask = []
+    for batch in range(batches):
+        bitmask_in_batch = []
+        for head in range(numheads):
+            # pass
+            qk_ = torch.einsum('md, nd-> mn', q[batch, head], k[batch, head])
+            attnmap = torch.softmax(qk_* (1./D**0.5), dim=-1)
+            mask = (attnmap > thresh)
+            bitmask_head = attnmapor(mask, blocksz) # 10 ms
+            bitmask_in_batch.append(bitmask_head.unsqueeze(0))
+        bitmask.append(torch.concat(bitmask_in_batch).unsqueeze(0))
+    return torch.concat(bitmask)
+
+
+def qkattn_indexmask(q, k, thresh=0.001, blocksz = 128):
     batches = q.shape[0]
     numheads = q.shape[1]
     seq_q = q.shape[2]
@@ -114,13 +133,37 @@ def qkattn_masked(q, k, thresh=0.001, blocksz = 128):
 
         indexmask.append(torch.concat(indexmask_in_batch).unsqueeze(0))
         indexmask_counts.append(torch.concat(indexmask_in_batch_counts).unsqueeze(0))
-
-    # return None, None
     return torch.concat(indexmask).to(torch.int), torch.concat(indexmask_counts).to(torch.int)
 
-# 
 
-def qkattn_masked_cuda(q, k, thresh, blocksz=128):
+def qkattn_bitmask_cuda(q, k, thresh, blocksz=128):
+    batch = q.shape[0]
+    heads = q.shape[1]
+    seq = q.shape[2]
+    D = q.shape[3]
+
+    assert blocksz == 128
+
+    seq_padded = 128*((seq + 128 - 1)//128)
+    seq_blocks = (seq + blocksz - 1)//blocksz
+    mask_stride = seq_blocks * blocksz
+
+    # get maxq, denom
+    max_q = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+    denom = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+    spattn_interface.maxq_denom(max_q, denom, q.contiguous(), k.contiguous())
+
+    # get booleanmask
+    booleanmask = torch.zeros([batch, heads, seq_blocks, mask_stride], device='cuda', dtype=torch.int)   
+    spattn_interface.booleanmask_128(
+        booleanmask, max_q.contiguous(), denom.contiguous(), 
+        q.contiguous(), k.contiguous(), thresh
+    )
+    return booleanmask[:, :, :, :seq] > 0
+
+
+
+def qkattn_indexmask_cuda(q, k, thresh, blocksz=128):
     batch = q.shape[0]
     heads = q.shape[1]
     seq = q.shape[2]
@@ -150,7 +193,6 @@ def qkattn_masked_cuda(q, k, thresh, blocksz=128):
     spattn_interface.booleanmask_to_indexmask(
         kv_indices, num_kv_indices, booleanmask.contiguous()
     )
-
     return kv_indices, num_kv_indices
 
 
