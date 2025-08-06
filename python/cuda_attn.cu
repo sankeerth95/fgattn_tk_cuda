@@ -66,6 +66,27 @@ void allindex_mask_impl(
 }
 
 
+// void attn_maxq_denom_impl(
+//     float* d_o_max_q, float* d_o_norm, 
+//     maxq_denom::bf16* d_q, maxq_denom::bf16* d_k,
+//     int batch, int heads, int seq, int D
+// ) {  
+//     if (batch == 1 && heads == 12 && seq == 32760 && D == 128){
+//       maxq_denom::max_denom_cu_impl<1, 12, 32760, 128>(
+//           d_o_max_q, d_o_norm, d_q, d_k
+//       );
+//     } else if (batch == 1 && heads == 12 && seq == 32768 && D == 128){
+//       maxq_denom::max_denom_cu_impl<1, 12, 32768, 128>(
+//           d_o_max_q, d_o_norm, d_q, d_k
+//       );
+//     }
+//     else {
+//       printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
+//       assert(false);
+//     }
+// }
+
+
 void maxq_denom_impl(
     float* d_o_max_q, float* d_o_norm, 
     maxq_denom::bf16* d_q, maxq_denom::bf16* d_k,
@@ -139,5 +160,4 @@ void booleanmask_to_indexmask_impl(
   }
 
 }
-
 
