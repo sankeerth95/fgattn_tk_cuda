@@ -4,7 +4,7 @@
 #include <cuda_bf16.h>
 
 #include "utils.cuh"
-#include "thresholdmask.cuh"
+#include "maxq_denom.cuh"
 
 
 void test_kernel() {
@@ -13,15 +13,15 @@ void test_kernel() {
   constexpr int batches = 1;
   constexpr int heads = 12;
   constexpr int seq = 32760;
+  constexpr int seq_padded = 32768;
   constexpr int dims = 128;
   // const     int memsize_qkvo = batches*heads*seq*dims*sizeof(bf16);
   
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
 
-  float* d_o_norm  = init_empty_array<float, batches, heads, 1, seq>();
-  float* d_o_max_q = init_empty_array<float, batches, heads, 1, seq>();
-  float* d_o_max_k = init_empty_array<float, batches, heads, 4*2, seq>();
+  float* d_o_norm  = init_empty_array<float, batches, heads, 1, seq_padded>();
+  float* d_o_max_q = init_empty_array<float, batches, heads, 1, seq_padded>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
 
@@ -30,7 +30,7 @@ void test_kernel() {
     printf("___CUDA error: %s\n", cudaGetErrorString(err2));
   }
 
-  thresholdmask::thresh_mask_cu_impl<batches, heads, seq, dims>(d_o_max_q, d_o_max_k, d_o_norm, d_Q, d_K);
+  maxq_denom::max_denom_cu_impl<batches, heads, seq, dims>(d_o_max_q, d_o_norm, d_Q, d_K);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess) {
     printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -55,15 +55,15 @@ void benchmark_kernel(){
   constexpr int batches = 1;
   constexpr int heads = 12;
   constexpr int seq = 32760;
+  constexpr int seq_padded = 32768;
   constexpr int dims = 128;
   constexpr int NITERS = 20;
 
   float h_Q[batches][heads][seq][dims];
   float h_K[batches][heads][seq][dims];
 
-  float* d_o_norm  = init_empty_array<float, batches, heads, 1, seq>();
-  float* d_o_max_q = init_empty_array<float, batches, heads, 1, seq>();
-  float* d_o_max_k = init_empty_array<float, batches, heads, 4*2, seq>();
+  float* d_o_norm  = init_empty_array<float, batches, heads, 1, seq_padded>();
+  float* d_o_max_q = init_empty_array<float, batches, heads, 1, seq_padded>();
   bf16* d_Q = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_Q[0][0][0][0]));
   bf16* d_K = init_with_randn_values<bf16, batches, heads, seq, dims>(static_cast<float*>(&h_K[0][0][0][0]));
 
@@ -74,7 +74,7 @@ void benchmark_kernel(){
   cudaDeviceSynchronize();
   cudaEventRecord(start, 0);
   for (int i = 0; i < NITERS; i++) {
-    thresholdmask::thresh_mask_cu_impl<batches, heads, seq, dims>(d_o_max_q, d_o_max_k, d_o_norm, d_Q, d_K);
+    maxq_denom::max_denom_cu_impl<batches, heads, seq, dims>(d_o_max_q, d_o_norm, d_Q, d_K);
   }
   cudaDeviceSynchronize();
   cudaEventRecord(stop, 0);
