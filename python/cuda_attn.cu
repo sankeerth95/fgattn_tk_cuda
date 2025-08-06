@@ -1,5 +1,6 @@
 #include "fullattn_wgload_padded.cuh"
 #include "sparseattn_asyncgatherload_padded.cuh"
+#include "maxq_denom_attn.cuh"
 #include "maxq_denom.cuh"
 #include "utils.cuh"
 #include "mask_utils.cuh"
@@ -66,25 +67,27 @@ void allindex_mask_impl(
 }
 
 
-// void attn_maxq_denom_impl(
-//     float* d_o_max_q, float* d_o_norm, 
-//     maxq_denom::bf16* d_q, maxq_denom::bf16* d_k,
-//     int batch, int heads, int seq, int D
-// ) {  
-//     if (batch == 1 && heads == 12 && seq == 32760 && D == 128){
-//       maxq_denom::max_denom_cu_impl<1, 12, 32760, 128>(
-//           d_o_max_q, d_o_norm, d_q, d_k
-//       );
-//     } else if (batch == 1 && heads == 12 && seq == 32768 && D == 128){
-//       maxq_denom::max_denom_cu_impl<1, 12, 32768, 128>(
-//           d_o_max_q, d_o_norm, d_q, d_k
-//       );
-//     }
-//     else {
-//       printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
-//       assert(false);
-//     }
-// }
+void attn_maxq_denom_impl(
+    maxq_denom::bf16* d_o,
+    float* d_o_max_q, float* d_o_norm, 
+    maxq_denom::bf16* d_q, maxq_denom::bf16* d_k, maxq_denom::bf16* d_v,
+    int batch, int heads, int seq, int D
+) {  
+    int seq_padding = ((seq+128-1) / 128) * 128;
+    if (batch == 1 && heads == 12 && seq == 32760 && D == 128){
+      maxq_denom_attn::attn_fwd_cu_impl<1, 12, 32760, 128>(
+          d_o, d_o_max_q, d_o_norm, d_q, d_k, d_v, seq_padding
+      );
+    } else if (batch == 1 && heads == 12 && seq == 32768 && D == 128){
+      maxq_denom_attn::attn_fwd_cu_impl<1, 12, 32768, 128>(
+          d_o, d_o_max_q, d_o_norm, d_q, d_k, d_v, seq_padding
+      );
+    }
+    else {
+      printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
+      assert(false);
+    }
+}
 
 
 void maxq_denom_impl(
