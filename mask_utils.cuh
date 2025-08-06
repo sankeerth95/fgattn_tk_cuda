@@ -221,13 +221,6 @@ __global__ void booleanmask_from_qk(__grid_constant__ const globals_fwd<D> g) {
     kittens::load(max_vec_reg, g.max_q, {batch, head, 0, seq + warpgroupid});
     kittens::load(denom_vec_reg, g.norm, {batch, head, 0, seq + warpgroupid});
 
-    // int[B][H][SB]
-    // int* num_kv_indices_ptr = g.num_kv_indices + SB*H*batch + SB*head + seqblock;//
-    // *num_kv_indices_ptr = 0;
-    // int[batch][heads][seqblocks][mask_stride]
-    // int* kv_indices_ptr = g.kv_indices + H*SB*g.mask_stride*batch + SB*g.mask_stride*head + g.mask_stride*seqblock;
-
-
     // wait for phase 0 to complete (init load.)
     kittens::wait(q_loaded_to_smem, 0);
     for (int kv_idx = 0; kv_idx < kv_blocks ; ++kv_idx) {
