@@ -148,7 +148,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
   __syncthreads();
 
   if (warpgroupid == NUM_WARPGROUPS-1) {  // last warpgroup is a producer warpgroup
-    warpgroup::decrease_registers<80>();
+    warpgroup::decrease_registers<96>();
     
     for (int next_kv_idx = stages-1; next_kv_idx < kv_blocks; ++next_kv_idx) {
       int stage = next_kv_idx%stages;
@@ -168,7 +168,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
       kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
     }
   } else {
-    warpgroup::increase_registers<160>();
+    warpgroup::increase_registers<176>();
 
     constexpr int qo_regtile = params_fwd<D>::qo_height/WARPGROUP_WARPS;
     static_assert(qo_regtile == 16, "qo_regtile must be 16");
@@ -245,7 +245,10 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
     warpgroup::sync(warpgroupid);
 
     // store this stuff
+    padutils::nan_to_zero(max_vec);
     warpgroup::store(g.o_max_q, max_vec, {batch, head, 0, seq + warpgroupid});
+
+    padutils::nan_to_neginfty(norm_vec);
     warpgroup::store(g.o_norm, norm_vec, {batch, head, 0, seq + warpgroupid});
 
     // store to gmem

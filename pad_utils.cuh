@@ -19,10 +19,37 @@ template<> __device__ inline float2 nan_to_neginfty_op::op<float2> (const float2
   return float2{f1, f2};
 }
 
+
+struct nan_to_zero_op {
+    template<typename T> static __device__ inline T op(const T &x);
+};
+
+template<> __device__ inline float nan_to_zero_op::op<float> (const float &x) {
+  return isnan(x)? kittens::base_types::constants<float>::zero() : x;
+}
+
+template<> __device__ inline float2 nan_to_zero_op::op<float2> (const float2 &x) {
+  float f1 = isnan(x.x)? kittens::base_types::constants<float>::zero() : x.x;
+  float f2 = isnan(x.y)? kittens::base_types::constants<float>::zero() : x.y;
+  return float2{f1, f2};
+}
+
+
 template<kittens::ducks::rt::all T>
 __device__ static inline void nan_to_neginfty(T &dst) {
     kittens::unary_map<nan_to_neginfty_op, T>(dst, dst);
 }
+
+template<kittens::ducks::rv::all T>
+__device__ static inline void nan_to_neginfty(T &dst) {
+    kittens::unary_op<nan_to_neginfty_op, T>(dst, dst);
+}
+
+template<kittens::ducks::rv::all T>
+__device__ static inline void nan_to_zero(T &dst) {
+    kittens::unary_op<nan_to_zero_op, T>(dst, dst);
+}
+
 
 template<kittens::ducks::sv::all SV, kittens::ducks::gl::all GL, kittens::ducks::coord::vec COORD=kittens::coord<SV>>
 __device__ static inline void load_indices(SV &dst, const GL &src, const COORD &idx, const int num_indices) {

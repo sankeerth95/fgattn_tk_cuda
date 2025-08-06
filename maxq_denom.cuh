@@ -178,7 +178,7 @@ void normvec_and_maxscaled_kernel(__grid_constant__ const globals_fwd<D> g) {
       warpgroup::mma_async_wait();
 
       // 2. Compute scaled softmax
-      padutils::nan_to_neginfty(qkt_block);
+      if(kv_idx == kv_blocks-1) padutils::nan_to_neginfty(qkt_block);
       kittens::row_max(max_vec_reg, qkt_block, max_vec_reg);
       kittens::mul(qkt_block, qkt_block, scale_factor);
       kittens::mul(max_vec_scaled_reg, max_vec_reg, scale_factor);  // 1.0f/sqrt(D)
@@ -198,7 +198,11 @@ void normvec_and_maxscaled_kernel(__grid_constant__ const globals_fwd<D> g) {
 
       if (warpgroup::laneid() == 0) kittens::arrive(compute_done[stage], 1);
     }
+
+    padutils::nan_to_zero(max_vec_reg);
     warpgroup::store(g.o_max_q, max_vec_reg, {batch, head, 0, seq + warpgroupid});
+
+    padutils::nan_to_neginfty(norm_vec_reg);    
     warpgroup::store(g.o_norm, norm_vec_reg, {batch, head, 0, seq + warpgroupid});
   }
 }
