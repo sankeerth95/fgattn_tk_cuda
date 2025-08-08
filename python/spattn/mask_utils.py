@@ -1,23 +1,31 @@
 import time
 import torch
 import spattn.cuda_attn as spattn_interface
+import nvidia.nvcomp
+
+nvcomp = nvidia.nvcomp
 
 
-
-
-def get_allindex_mask(B: int, H: int, S: int, BLOCKSZ: int):
+def get_allindex_mask(B: int, H: int, max_stride: int, S: int, BLOCKSZ: int):
     num_blocks = (S + BLOCKSZ - 1) // BLOCKSZ
     kv_num_indices = torch.full((B, H, num_blocks), S, device='cuda', dtype=torch.int32)
-    indices = torch.arange(S, device='cuda', dtype=torch.int32)
-    kv_indices = indices.expand(B, H, num_blocks, S).contiguous()
+    indices = torch.arange(max_stride, device='cuda', dtype=torch.int32)
+    kv_indices = indices.expand(B, H, num_blocks, max_stride).contiguous()
     return kv_indices, kv_num_indices
 
 
-def get_allrandompermutation_mask(B: int, H: int, S: int, BLOCKSZ: int):
+def get_allrandompermutation_mask(B: int, H: int, max_stride: int, S: int, BLOCKSZ: int):
     num_blocks = (S + BLOCKSZ - 1) // BLOCKSZ
     kv_num_indices = torch.full((B, H, num_blocks), S, device='cuda', dtype=torch.int32)
-    indices = torch.randperm(S, device='cuda', dtype=torch.int32)
-    kv_indices = indices.expand(B, H, num_blocks, S).contiguous()
+
+    if max_stride > S:
+        indices = torch.concat([
+            torch.randperm(S, device='cuda', dtype=torch.int32), 
+            torch.full([max_stride - S], max_stride, device='cuda', dtype=torch.int32)
+        ]).view([max_stride,])
+    else:
+        indices = torch.concat(torch.randperm(S, device='cuda', dtype=torch.int32))
+    kv_indices = indices.expand(B, H, num_blocks, max_stride).contiguous()
     return kv_indices, kv_num_indices
 
 
@@ -191,7 +199,7 @@ def bitmask_to_indexmask_cuda(booleanmask):
     kv_indices = torch.full([batch, heads, seq_blocks, mask_stride], mask_stride, device='cuda', dtype=torch.int)
     num_kv_indices = torch.zeros([batch, heads, seq_blocks], device='cuda', dtype=torch.int)
     spattn_interface.booleanmask_to_indexmask(
-        kv_indices, num_kv_indices, booleanmask.contiguous()
+        kv_indices, num_kv_indices, booleanmask.contiguous(), mask_stride
     )
     return kv_indices, num_kv_indices
 
@@ -206,7 +214,7 @@ def qkattn_indexmask_cuda(q, k, thresh, blocksz=128):
 
     seq_padded = 128*((seq + 128 - 1)//128)
     seq_blocks = (seq + blocksz - 1)//blocksz
-    mask_stride = seq_blocks * blocksz
+    mask_stride = seq_padded
 
     # get maxq, denom
     max_q = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
@@ -224,28 +232,77 @@ def qkattn_indexmask_cuda(q, k, thresh, blocksz=128):
     kv_indices = torch.full([batch, heads, seq_blocks, mask_stride], mask_stride, device='cuda', dtype=torch.int)
     num_kv_indices = torch.zeros([batch, heads, seq_blocks], device='cuda', dtype=torch.int)
     spattn_interface.booleanmask_to_indexmask(
-        kv_indices, num_kv_indices, booleanmask.contiguous()
+        kv_indices, num_kv_indices, booleanmask.contiguous(), seq
     )
     return kv_indices, num_kv_indices
 
 
+def qkattn_indexmask_from_maxq_denom_cuda(max_q, denom, q, k, thresh, blocksz=128):
+    batch = max_q.shape[0]
+    heads = max_q.shape[1]
+    seq = q.shape[2]
+    seq_padded = max_q.shape[3]#128*((seq + 128 - 1)//128)
+
+    assert blocksz == 128
+
+    seq_blocks = (seq + blocksz - 1)//blocksz
+    mask_stride = seq_padded
+
+    # get booleanmask
+    booleanmask = torch.zeros([batch, heads, seq_blocks, mask_stride], device='cuda', dtype=torch.int)   
+    spattn_interface.booleanmask_128(
+        booleanmask, max_q.contiguous(), denom.contiguous(), 
+        q.contiguous(), k.contiguous(), thresh
+    )
+    # print(booleanmask.sum())
+    # get kv indices, num_kv_indices
+    kv_indices = torch.full([batch, heads, seq_blocks, mask_stride], mask_stride, device='cuda', dtype=torch.int)
+    num_kv_indices = torch.zeros([batch, heads, seq_blocks], device='cuda', dtype=torch.int)
+    spattn_interface.booleanmask_to_indexmask(
+        kv_indices, num_kv_indices, booleanmask.contiguous(), seq
+    )
+    return kv_indices, num_kv_indices
+
 
 class MaskCache:
-    def __init__(self, B, H, S, BLOCKSZ, thresh=0.1):
-        self.cache = {}
+    def __init__(self, B, H, S, BLOCKSZ, offload=False, compress=False):
+        self.cache = (None, None,)
         self.B = B
         self.H = H
         self.S = S
         self.BLOCKSZ = BLOCKSZ
-        self.thresh = 0.05 * 1./S
+        self.seqblocks = ((S + 128 - 1)//128)
+        self.mask_stride = 128 * ((S + 128 - 1)//128)
+        self.ditrun = -1
+        self.offload = offload
+        self.compress = compress
+        self.codec = nvcomp.Codec(algorithm='Bitcomp')
 
-    def get_mask_from_cache(self, q, k, layer, ditrun=0):
-        if layer not in self.cache.keys():
-            kv_indices, kv_num_indices = qkattn_masked(q, k, self.thresh, self.BLOCKSZ)
-            self.cache[layer] = (kv_indices, kv_num_indices,)
+
+    def get_mask_from_cache(self, ditrun=0):
+        self.ditrun = ditrun
+        if self.offload:
+            kv_indices, kv_num_indices = self.cache
+            return kv_indices.to('cuda'), kv_num_indices
+        elif self.compress:
+            kv_indices_comp, kv_num_indices = self.cache
+            nv_kv_indices = self.codec.decode(kv_indices_comp)
+            kv_indices = torch.as_tensor(nv_kv_indices, device='cuda').view(nv_kv_indices.dtype)
+            kv_indices = kv_indices.reshape(self.B, self.H, self.seqblocks, self.mask_stride)
             return kv_indices, kv_num_indices
         else:
-            return self.cache[layer]
+            kv_indices, kv_num_indices = self.cache
+            return kv_indices, kv_num_indices
+
+    def update_cache(self, layer, kv_indices, kv_num_indices):
+        if self.offload:
+            self.cache[layer] = (kv_indices.cpu(), kv_num_indices,)
+        elif self.compress:
+            nv_x = nvcomp.as_array(kv_indices)
+            kv_indices_comp = self.codec.encode(kv_indices)
+            self.cache[layer] = (kv_indices_comp, kv_num_indices,)
+        else: 
+            self.cache[layer] = (kv_indices, kv_num_indices,)
 
 
 def get_lsh_mask():
@@ -335,15 +392,6 @@ def test_maskcache():
 if __name__ == '__main__':
 
     test_maskcache()
-
-
-
-
-
-
-
-
-
 
 
 

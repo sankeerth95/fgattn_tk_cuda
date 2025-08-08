@@ -45,7 +45,7 @@ void booleanmask_to_indexmask_impl(
   int* d_indexmask, 
   int* d_num_indices,
   int* d_booleanmask,
-  int batch, int heads, int seqblocks, int mask_stride
+  int batch, int heads, int seq, int seqblocks, int mask_stride
 );
 
 
@@ -206,7 +206,8 @@ void booleanmask_128(
 void booleanmask_to_indexmask(
   torch::Tensor kv_indices,
   torch::Tensor kv_numindices,
-  torch::Tensor booleanmask
+  torch::Tensor booleanmask,
+  int seq
 ){
 
   int batch = booleanmask.size(0);
@@ -218,7 +219,7 @@ void booleanmask_to_indexmask(
     kv_indices.data_ptr<int>(),
     kv_numindices.data_ptr<int>(),
     booleanmask.data_ptr<int>(),
-    batch, heads, seq_blocks, mask_stride
+    batch, heads, seq, seq_blocks, mask_stride
   );
 }
 

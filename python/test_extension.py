@@ -4,13 +4,7 @@ import spattn.cuda_attn as spattn_interface
 import spattn.mask_utils as mask_utils
 
 
-def test_attn_impls(seq_len_):
-    batch = 1
-    heads = 12
-    seq_len = seq_len_
-    mask_stride = ((seq_len + 128 - 1) // 128) * 128
-    D = 128
-
+def full_attn_test(batch, heads, seq_len, D):
     q = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
     k = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
     v = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
@@ -35,28 +29,58 @@ def test_attn_impls(seq_len_):
     print('##########################################################')
     print('')
 
+    
+def attn_maxq_denom_test(batch, heads, seq_len, D):
+    q = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
+    k = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
+    v = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
+
+    expected_torch_flashattn = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    expected_torch_flashattn_f32 = torch.nn.functional.scaled_dot_product_attention(
+        q.to(dtype=torch.float),
+        k.to(dtype=torch.float),
+        v.to(dtype=torch.float),
+    )
+
+
+    print('################# Running full attention maxq denom #################')
+    o_attn_maxq_denom = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    seq_padded = 128*((seq_len + 128 - 1)//128)
+    max_q = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+    denom = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+    spattn_interface.fullattn_maxq_denom(o_attn_maxq_denom, max_q, denom, q.contiguous(), k.contiguous(), v.contiguous())
+    maxdiff = torch.max(torch.abs(o_attn_maxq_denom - expected_torch_flashattn))
+    maxdiff = torch.max(torch.abs(o_attn_maxq_denom - expected_torch_flashattn_f32))
+    print(f"num nans: {o_attn_maxq_denom.isnan().sum()} out of {o_attn_maxq_denom.numel()}")
+    print(f"Max difference between mine and torch implementations: {maxdiff.item()}")
+    print(f"Max difference between mine and torch32 implementations: {maxdiff.item()}")
+    print('##########################################################')
+    print('')
+
+
+def sparse_attn_test(batch, heads, seq_len, D):
+    mask_stride = ((seq_len + 128 - 1) // 128) * 128
+    BLOCKSZ = 128
+    # kv_indices, kv_num_indices = mask_utils.get_allindex_mask(batch, heads, mask_stride, seq_len, BLOCKSZ)
+    kv_indices, kv_num_indices = mask_utils.get_allrandompermutation_mask(batch, heads, mask_stride, seq_len, BLOCKSZ)
+
+
+    q = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
+    k = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
+    v = torch.randn((batch, heads, seq_len, D), dtype=torch.bfloat16, device="cuda")
+
+    expected_torch_flashattn = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    expected_torch_flashattn_f32 = torch.nn.functional.scaled_dot_product_attention(
+        q.to(dtype=torch.float),
+        k.to(dtype=torch.float),
+        v.to(dtype=torch.float),
+    )
 
     print('################# Running sparse attention #################')
-    BLOCKSZ = 128
-    cpp_mask = False
-    o_sparse = torch.empty_like(q)
-    if cpp_mask:
-        print('using cpp kenel mask')
-        seqblocks = (seq_len + BLOCKSZ - 1)//BLOCKSZ
-        kv_indices = torch.empty([batch, heads, seqblocks, mask_stride], device='cuda', dtype=torch.int)
-        kv_num_indices = torch.empty([batch, heads, seqblocks], device='cuda', dtype=torch.int)
-        spattn_interface.all_index_mask(kv_indices, kv_num_indices, batch, heads, seqblocks, seq_len)
-    else:
-        print('using torch mask')
-        kv_indices, kv_num_indices = mask_utils.get_allindex_mask(batch, heads, mask_stride, BLOCKSZ)
-    
+    o_sparse = torch.empty_like(q)    
     spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
     torch.cuda.synchronize()
 
-
-
-    # print(kv_indices)
-    # print(kv_num_indices)
     maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn))
     maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn_f32))
     print(f"num nans: {o_sparse.isnan().sum()} out of {o_sparse.numel()}")
@@ -66,8 +90,7 @@ def test_attn_impls(seq_len_):
     print('')
 
 
-
-    kv_indices, kv_num_indices = mask_utils.get_allrandompermutation_mask(batch, heads, mask_stride, BLOCKSZ)
+def benchmark_sparse_attention():
     N = 200
     torch.cuda.synchronize()
     start = time.time()
@@ -78,17 +101,17 @@ def test_attn_impls(seq_len_):
     print((end - start)/N, 's')
 
 
-
-
-
 if __name__ == "__main__":
 
-    # right now seq_len_ has to be a multiple of 128
-    for seq_len_ in [ 32768, 32760, ]:
-        print('seq_len: ', seq_len_)
-        test_attn_impls(seq_len_)
+    batch = 1
+    D = 128
+    for heads in [ 12, 40 ]:
+      for seq_len in [ 32760, 75600 ]:
+        print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
+        full_attn_test(batch, heads, seq_len, D)
+        attn_maxq_denom_test(batch, heads, seq_len, D)
+        sparse_attn_test(batch, heads, seq_len, D)
         print('')
-
 
 
 

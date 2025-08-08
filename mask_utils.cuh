@@ -274,7 +274,8 @@ template<int B, int H, int SB, int MASKSTRIDE>
 __global__ void boolean_to_indexmask_kernel(
   int* d_kv_indices,
   int* d_num_kv_indices,
-  int* d_booleanmask
+  int* d_booleanmask,
+  int kv_seq_len
 ){
   using IndexType = int[B][H][SB][MASKSTRIDE];
   using NumIndexType = int[B][H][SB];
@@ -293,7 +294,7 @@ __global__ void boolean_to_indexmask_kernel(
   #pragma unroll
   for(int cur = threadIdx.x; cur < MASKSTRIDE; cur += blockDim.x) {
     int num = booleanmask[b][h][seqblock][cur];
-    if (num > 0){
+    if ( cur < kv_seq_len && num > 0){
       int idx = atomicAdd(&num_kv_indices[b][h][seqblock], 1);
       kv_indices[b][h][seqblock][idx] = cur;
     }
@@ -302,7 +303,7 @@ __global__ void boolean_to_indexmask_kernel(
 
 
 template<int B, int H, int SB, int MASKSTRIDE>
-void booleanmask_to_indexmask_cu_impl(int* d_kv_indices, int* d_num_kv_indices, int* d_booleanmask) {
+void booleanmask_to_indexmask_cu_impl(int* d_kv_indices, int* d_num_kv_indices, int* d_booleanmask, int kv_seq_len) {
 
   static_assert(MASKSTRIDE%128 == 0, "mask stride has to be a multiple of 128");
 
@@ -312,7 +313,8 @@ void booleanmask_to_indexmask_cu_impl(int* d_kv_indices, int* d_num_kv_indices, 
   boolean_to_indexmask_kernel< B, H, SB, MASKSTRIDE > <<< num_blocks, num_threads >>>(
     d_kv_indices, 
     d_num_kv_indices, 
-    d_booleanmask
+    d_booleanmask,
+    kv_seq_len
   );
 }
 
