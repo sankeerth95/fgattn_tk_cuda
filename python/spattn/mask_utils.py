@@ -12,44 +12,26 @@ nvcomp = nvidia.nvcomp
 
 
 class NaiveMaskCache:
-    def __init__(self):
+    def __init__(self, compute_cache_at):
         self.cache = {}
-        self.ditrun = -1
+        self.compute_cache_at = compute_cache_at
 
-    def get_mask_from_cache(self, layer, ditrun=0):
-        self.ditrun = ditrun
-        if self.offload:
-            kv_indices, kv_num_indices = self.cache[layer]
-            return kv_indices.to('cuda'), kv_num_indices
-        elif self.compress:
-            kv_indices_comp, kv_num_indices = self.cache[layer]
-            nv_kv_indices = self.codec.decode(kv_indices_comp)
-            kv_indices = torch.as_tensor(nv_kv_indices, device='cuda').view(nv_kv_indices.dtype)
-            kv_indices = kv_indices.reshape(self.B, self.H, self.seqblocks, self.mask_stride)
-            return kv_indices, kv_num_indices
-        else:
-            kv_indices, kv_num_indices = self.cache[layer]
-            return kv_indices, kv_num_indices
+    def run_fullattn(self, ditrun):
+        return ditrun in self.compute_cache_at
+
+    def get_mask_from_cache(self, layer):
+        kv_indices, kv_num_indices = self.cache[layer]
+        return kv_indices, kv_num_indices
 
     def update_cache(self, layer, kv_indices, kv_num_indices):
-        if self.offload:
-            self.cache[layer] = (kv_indices.cpu(), kv_num_indices,)
-        elif self.compress:
-            nv_x = nvcomp.as_array(kv_indices)
-            kv_indices_comp = self.codec.encode(kv_indices)
-            self.cache[layer] = (kv_indices_comp, kv_num_indices,)
-        else: 
-            self.cache[layer] = (kv_indices, kv_num_indices,)
+        self.cache[layer] = (kv_indices, kv_num_indices,)
 
 
-
-class OffloadMaskCache:
-    def __init__(self):
-        self.cache = {}
-        self.ditrun = -1
+class OffloadMaskCache (NaiveMaskCache):
+    def __init__(self, compute_cache_at):
+        super().__init__(compute_cache_at)
 
     def get_mask_from_cache(self, layer, ditrun=0):
-        self.ditrun = ditrun
         kv_indices, kv_num_indices = self.cache[layer]
         return kv_indices.to('cuda'), kv_num_indices
 
@@ -57,17 +39,15 @@ class OffloadMaskCache:
         self.cache[layer] = (kv_indices.cpu(), kv_num_indices,)
 
 
-class CompressMaskCache:
-    def __init__(self):
-        self.cache = {}
+class CompressMaskCache (NaiveMaskCache):
+    def __init__(self, compute_cache_at):
+        super().__init__(compute_cache_at)
         self.seqblocks = ((S + 128 - 1)//128)
         self.mask_stride = 128 * self.seqblocks
-        self.ditrun = -1
         self.codec = nvcomp.Codec(algorithm='Bitcomp')
 
 
-    def get_mask_from_cache(self, layer, ditrun=0):
-        self.ditrun = ditrun
+    def get_mask_from_cache(self, layer):
         kv_indices_comp, kv_num_indices = self.cache[layer]
         nv_kv_indices = self.codec.decode(kv_indices_comp)
         kv_indices = torch.as_tensor(nv_kv_indices, device='cuda').view(nv_kv_indices.dtype)
