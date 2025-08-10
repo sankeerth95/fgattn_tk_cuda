@@ -145,9 +145,7 @@ void fullattn_maxq_denom(
     reinterpret_cast<kernel_native_t*>(v.data_ptr<scalar_t>()),
     batch, heads, seq, D
   );
-
 }
-
 
 
 void maxq_denom(
@@ -222,8 +220,6 @@ void booleanmask_to_indexmask(
     batch, heads, seq, seq_blocks, mask_stride
   );
 }
-
-
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
