@@ -47,7 +47,7 @@ setuptools.setup(
         CUDAExtension(
             name="spattn.cuda_attn",
             include_dirs=[
-                os.path.join(project_root, "./"),
+                os.path.join(project_root, "include"),
                 os.path.join(thunderkittens_root, "include"),
                 os.path.join(thunderkittens_root, "prototype"),
             ],
