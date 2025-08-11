@@ -36,28 +36,64 @@ class OffloadMaskCache (NaiveMaskCache):
         return kv_indices.to('cuda'), kv_num_indices
 
     def update_cache(self, layer, kv_indices, kv_num_indices):
+        print('updating cache for layer: ', layer)
         self.cache[layer] = (kv_indices.cpu(), kv_num_indices,)
 
 
 class CompressMaskCache (NaiveMaskCache):
     def __init__(self, compute_cache_at):
         super().__init__(compute_cache_at)
-        self.seqblocks = ((S + 128 - 1)//128)
-        self.mask_stride = 128 * self.seqblocks
-        self.codec = nvcomp.Codec(algorithm='Bitcomp')
-
+        self.codec = nvcomp.Codec(algorithm='BitComp')
+        self.shape = None
+        self.dtype = torch.int
 
     def get_mask_from_cache(self, layer):
-        kv_indices_comp, kv_num_indices = self.cache[layer]
-        nv_kv_indices = self.codec.decode(kv_indices_comp)
-        kv_indices = torch.as_tensor(nv_kv_indices, device='cuda').view(nv_kv_indices.dtype)
-        kv_indices = kv_indices.reshape(self.B, self.H, self.seqblocks, self.mask_stride)
+        nv_kv_indices_comp, kv_num_indices = self.cache[layer]
+        nv_kv_indices = self.codec.decode(nv_kv_indices_comp)
+        kv_indices = torch.as_tensor(nv_kv_indices, device='cuda').view(self.dtype)
+        kv_indices = kv_indices.reshape(*self.shape)
         return kv_indices, kv_num_indices
 
     def update_cache(self, layer, kv_indices, kv_num_indices):
-        nv_x = nvcomp.as_array(kv_indices)
-        kv_indices_comp = self.codec.encode(kv_indices)
-        self.cache[layer] = (kv_indices_comp, kv_num_indices,)
+        print('updating cache for layer: ', layer)
+        self.shape = kv_indices.shape
+        nv_kv_indices = nvcomp.as_array(kv_indices)
+        nv_kv_indices_comp = self.codec.encode(nv_kv_indices)
+        nv_kv_indices_decomp = self.codec.decode(nv_kv_indices_comp)
+        print(nv_kv_indices_comp.buffer_size, nv_kv_indices_decomp.buffer_size)
+        self.cache[layer] = (nv_kv_indices_comp, kv_num_indices,)
+
+
+
+class BitMaskCache:
+    def __init__(self, compute_cache_at):
+        self.cache = {}
+        self.compute_cache_at = compute_cache_at
+
+    def run_fullattn(self, ditrun):
+        return ditrun in self.compute_cache_at
+
+    def get_mask_from_cache(self, layer):
+        bytemask, seq_len = self.cache[layer]
+        kv_indices, kv_num_indices = bitmask_to_indexmask_cuda(bytemask, seq_len)
+        return kv_indices, kv_num_indices
+
+    def update_cache(self, layer, bytemask, seq_len):
+        self.cache[layer] = (bytemask, seq_len,)
+
+
+class CompressedBitMaskCache (BitMaskCache):
+
+    def get_mask_from_cache(self, layer):
+        bitmask_packed, seq_len = self.cache[layer]
+        bitmask = unpack(bitmask_packed).to(torch.int)
+        kv_indices, kv_num_indices = bitmask_to_indexmask_cuda(bitmask, seq_len)
+        return kv_indices, kv_num_indices
+
+    def update_cache(self, layer, bitmask, seq_len):
+        bitmask_packed = pack(bitmask > 0)
+        self.cache[layer] = (bitmask_packed, seq_len,)
+
 
 
 #########################################################################
@@ -251,7 +287,7 @@ def bitmask_to_indexmask(booleanmask):
 
 
 
-def bitmask_to_indexmask_cuda(booleanmask):
+def bitmask_to_indexmask_cuda(booleanmask, seq=75600):
     batch = booleanmask.shape[0]
     heads = booleanmask.shape[1]
     seq_blocks = booleanmask.shape[2]
@@ -259,7 +295,7 @@ def bitmask_to_indexmask_cuda(booleanmask):
     kv_indices = torch.full([batch, heads, seq_blocks, mask_stride], mask_stride, device='cuda', dtype=torch.int)
     num_kv_indices = torch.zeros([batch, heads, seq_blocks], device='cuda', dtype=torch.int)
     spattn_interface.booleanmask_to_indexmask(
-        kv_indices, num_kv_indices, booleanmask.contiguous(), mask_stride
+        kv_indices, num_kv_indices, booleanmask.contiguous(), seq
     )
     return kv_indices, num_kv_indices
 
@@ -293,6 +329,27 @@ def qk_indexmask_cuda(q, k, thresh, blocksz=128):
         kv_indices, num_kv_indices, booleanmask.contiguous(), seq
     )
     return kv_indices, num_kv_indices
+
+
+def qk_bitmask_from_maxq_denom_cuda(max_q, denom, q, k, thresh, blocksz=128):
+    batch = max_q.shape[0]
+    heads = max_q.shape[1]
+    seq = q.shape[2]
+    seq_padded = max_q.shape[3]#128*((seq + 128 - 1)//128)
+
+    assert blocksz == 128
+
+    seq_blocks = (seq + blocksz - 1)//blocksz
+    mask_stride = seq_padded
+
+    # get booleanmask
+    booleanmask = torch.zeros([batch, heads, seq_blocks, mask_stride], device='cuda', dtype=torch.int)   
+    spattn_interface.booleanmask_128(
+        booleanmask, max_q.contiguous(), denom.contiguous(), 
+        q.contiguous(), k.contiguous(), thresh
+    )
+    return booleanmask
+
 
 
 def qk_indexmask_from_maxq_denom_cuda(max_q, denom, q, k, thresh, blocksz=128):
@@ -358,4 +415,23 @@ def qk_topkmask_indices(q, k, select_k, B: int, H: int, S: int, D: int, BLOCKSZ:
 
 
 
+def pack(bool_tensor):
+    grouped_shape = (*bool_tensor.shape[:-1], bool_tensor.shape[-1] // 8, 8)
+    grouped_tensor = bool_tensor.reshape(grouped_shape)
+    powers_of_2 = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.uint8, device='cuda')
+    packed_tensor = torch.sum(
+        grouped_tensor.to(torch.uint8) * powers_of_2,
+        dim=-1
+    ).to(torch.uint8)
+    return packed_tensor
+
+
+def unpack(packed_tensor):
+    powers_of_2 = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.uint8, device='cuda')
+    unpacked_bytes = packed_tensor.unsqueeze(-1) # Shape -> (1, 1, 3, 2, 1)
+    unpacked_padded = (unpacked_bytes & powers_of_2) != 0 # Shape -> (1, 1, 3, 2, 8)
+    final_W = unpacked_padded.shape[-2] * unpacked_padded.shape[-1]
+    final_shape = (*unpacked_padded.shape[:-2], final_W)
+    unpacked_tensor = unpacked_padded.reshape(final_shape)
+    return unpacked_tensor
 

@@ -78,13 +78,31 @@ def test_qk_indexmask(batch, heads, seq, D):
     print('max indices_diff = ', indices_diff.abs().max())
 
 
+def torch_packbits_test(batch, heads, seq_len, blocksz):
+    seqblocks = (seq_len + blocksz - 1)//blocksz
+    mask_stride = seqblocks * blocksz
+    bool_tensor = torch.randint(0, 1, [batch, heads, seqblocks, mask_stride], dtype=torch.bool, device='cuda')
+
+    packed_tensor = mask_utils.pack(bool_tensor)
+    print(f"Packed uint8 tensor shape: {packed_tensor.shape}")
+    print("The last dimension is now 16 / 8 = 2")
+
+    unpacked_tensor = mask_utils.unpack(packed_tensor)
+    print(f"\nUnpacked boolean tensor shape: {unpacked_tensor.shape}")
+    print(f"Unpacking was successful: {torch.equal(bool_tensor, unpacked_tensor)}")
+
+
+
 if __name__ == '__main__':
+
     batch = 1
-    heads = 12
-    seq = 32760
     D = 128
-    test_max_denom(batch, heads, seq, D)
-    test_qk_bitmask(batch, heads, seq, D)
-    test_qk_indexmask(batch, heads, seq, D)
+    for heads in [12, 40]:
+        for seq in [32760, 75600]:
+            test_max_denom(batch, heads, seq, D)
+            test_qk_bitmask(batch, heads, seq, D)
+            test_qk_indexmask(batch, heads, seq, D)
+            torch_packbits_test(batch, heads, seq, 128)
+
 
 

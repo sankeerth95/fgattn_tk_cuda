@@ -85,3 +85,24 @@ def cached_attn_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
         spattn_interface.sp_attn(out, query.contiguous(), key.contiguous(), value.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
     return out
 
+
+def bitmaskcached_attn_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
+    thresh = kwargs["thresh"]
+    blocksz = kwargs["blocksz"]
+    mask_cache = kwargs["mask_cache"]
+
+    batch, heads, seq_len, D = query.shape
+    out = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    if mask_cache.run_fullattn(ditrun):
+        seq_padded = 128*((seq_len + 128 - 1)//128)
+        max_q = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+        denom = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+        spattn_interface.fullattn_maxq_denom(out, max_q, denom, query.contiguous(), key.contiguous(), value.contiguous())
+        bitmask = mask_utils.qk_bitmask_from_maxq_denom_cuda(max_q, denom, query, key, thresh, blocksz=blocksz)
+        mask_cache.update_cache(current_layer, bitmask, seq_len)
+    else:
+        kv_indices, kv_num_indices = mask_cache.get_mask_from_cache(current_layer)
+        spattn_interface.sp_attn(out, query.contiguous(), key.contiguous(), value.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
+    return out
+
+
