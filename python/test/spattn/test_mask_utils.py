@@ -4,8 +4,13 @@ import spattn.cuda_attn
 import spattn.mask_utils
 
 
-spattn_interface = spattn.cuda_attn
 mask_utils = spattn.mask_utils
+if True:
+    spattn_interface = torch.ops.cuda_attn
+else:
+    import spattn.cuda_attn
+    spattn_interface = spattn.cuda_attn
+
 
 def prepare_qkv_data(batch, heads, seq, D, dtype=torch.bfloat16, device='cuda'):
     q = torch.load('../../testdata/q6_3012.pt').to(dtype=dtype, device=device)

@@ -1,7 +1,10 @@
-import time
 import torch
-import spattn.cuda_attn as spattn_interface
 import nvidia.nvcomp
+if True:
+    spattn_interface = torch.ops.cuda_attn
+else:
+    import spattn.cuda_attn
+    spattn_interface = spattn.cuda_attn
 
 nvcomp = nvidia.nvcomp
 

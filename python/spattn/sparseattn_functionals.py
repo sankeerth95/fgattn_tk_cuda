@@ -1,6 +1,10 @@
 import torch
-import spattn.cuda_attn as spattn_interface
 import spattn.mask_utils as mask_utils
+import spattn.cuda_attn
+if True:
+    spattn_interface = torch.ops.cuda_attn
+else:
+    spattn_interface = spattn.cuda_attn
 
 
 def baseline_attn(query, key, value, current_layer, ditrun, *args, **kwargs):
@@ -63,6 +67,29 @@ def attn_computed_with_sparse_mask_cuda(query, key, value, *args, **kwargs):
     # print('ditrun:', ditrun, ', current_layer:', current_layer, ' mean kv indices:', kv_num_indices.to(torch.float).mean() / seq_len, flush=True)
     return out
 
+
+######################################################################
+
+def compute_cache_and_attn_cuda(query, key, value, *args, **kwargs):
+    thresh = kwargs["thresh"]
+    blocksz = kwargs["blocksz"]
+    batch, heads, seq_len, D = query.shape
+    out = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    seq_padded = 128*((seq_len + 128 - 1)//128)
+    max_q = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+    denom = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
+    spattn_interface.fullattn_maxq_denom(out, max_q, denom, query.contiguous(), key.contiguous(), value.contiguous())
+    kv_indices, kv_num_indices = mask_utils.qk_indexmask_from_maxq_denom_cuda(max_q, denom, query, key, thresh, blocksz=blocksz)
+    return out, kv_indices, kv_num_indices
+
+
+def sparse_attn_from_cache_cuda(query, key, value, *args, **kwargs):
+    mask_cache = kwargs["mask_cache"]
+    batch, heads, seq_len, D = query.shape
+    out = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    kv_indices, kv_num_indices = mask_cache.get_mask_from_cache()
+    spattn_interface.sp_attn(out, query.contiguous(), key.contiguous(), value.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
+    return out
 
 def cached_attn_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
     thresh = kwargs["thresh"]

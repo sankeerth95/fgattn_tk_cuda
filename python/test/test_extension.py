@@ -1,7 +1,10 @@
 import torch
-import time
-import spattn.cuda_attn as spattn_interface
 import spattn.mask_utils as mask_utils
+import spattn.cuda_attn
+if True:
+    spattn_interface = torch.ops.cuda_attn
+else:
+    spattn_interface = spattn.cuda_attn
 
 
 def full_attn_test(batch, heads, seq_len, D):
