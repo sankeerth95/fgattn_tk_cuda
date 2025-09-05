@@ -25,6 +25,11 @@ void attn_fwd_wg_impl (
   } else if (batch == 1 && heads == 40 && seq == 75600 && D == 128) {
     full_attn_wgload::attn_fwd_cu_impl<1, 40, 75600, 128>(o, q, k, v);
 
+  } else if (batch == 1 && heads == 24 && seq == 75856 && D == 128) {
+    // 1 24 75856 128
+    full_attn_wgload::attn_fwd_cu_impl<1, 24, 75856, 128, 75856-245>(o, q, k, v);
+    // full_attn_wgload::attn_fwd_cu_impl<1, 24, 75856, 128, 75856>(o, q, k, v);
+
   } else {
     printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
     assert(false);
@@ -57,6 +62,10 @@ void attn_sparse_fwd_wg_impl (
   } else if (batch == 1 && heads == 40 && seq == 75600 && D == 128) {
     assert(mask_stride % 128 == 0);
     async_gather_attn::async_gather_attn_fwd_cu_impl<1, 40, 75600, 128>(o, q, k, v, kv_indices, num_kv_indices, mask_stride); 
+
+  } else if (batch == 1 && heads == 24 && seq == 75856 && D == 128) {
+    assert(mask_stride % 128 == 0);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 24, 75856, 128>(o, q, k, v, kv_indices, num_kv_indices, mask_stride);
 
   } else {
     printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
@@ -117,6 +126,12 @@ void attn_maxq_denom_impl(
           d_o, d_o_max_q, d_o_norm, d_q, d_k, d_v, seq_padding
       );
 
+    } else if (batch == 1 && heads == 24 && seq == 75856 && D == 128) {
+      // HACK: special case to make this work with hunyuan video
+      maxq_denom_attn::attn_fwd_cu_impl<1, 24, 75856, 128, 75856-245>( 
+          d_o, d_o_max_q, d_o_norm, d_q, d_k, d_v, seq_padding
+      );
+
     } else {
       printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
       assert(false);
@@ -150,6 +165,11 @@ void maxq_denom_impl(
 
     } else if (batch == 1 && heads == 40 && seq == 75600 && D == 128){
       maxq_denom::max_denom_cu_impl<1, 40, 75600, 128>(
+          d_o_max_q, d_o_norm, d_q, d_k
+      );
+
+    } else if (batch == 1 && heads == 24 && seq == 75856 && D == 128) {
+      maxq_denom::max_denom_cu_impl<1, 24, 75856, 128>(
           d_o_max_q, d_o_norm, d_q, d_k
       );
 
@@ -226,6 +246,19 @@ void booleanmask_128_impl( int* d_booleanmask, float threshold, int mask_stride,
       d_k
     );
 
+  } else if (batch == 1 && heads == 24 && seq == 75856 && D == 128) {
+
+    // special case for hunyuan: add -245
+    mask_utils::booleanmask_from_qk_cu_impl<1, 24, 75856, (75856+128-1)/128,128, 75856-245>(
+      d_booleanmask, 
+      threshold, 
+      mask_stride, 
+      d_o_max_q, 
+      d_o_norm, 
+      d_q, 
+      d_k
+    );
+
   } else {
     printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
     assert(false);
@@ -256,6 +289,12 @@ void booleanmask_to_indexmask_impl(
     mask_utils::booleanmask_to_indexmask_cu_impl<1, 40, 591, 75648>(
       d_indexmask, d_num_indices, d_booleanmask, seq
     );
+  } else if (batch == 1 && heads == 24 && seqblocks == 593 && mask_stride == 75904 ) {
+
+    mask_utils::booleanmask_to_indexmask_cu_impl<1, 24, 593, 75904>(
+      d_indexmask, d_num_indices, d_booleanmask, seq
+    );
+
   } else {
     printf("...b2i kernel not found: %d %d %d %d\n", batch, heads, seqblocks, mask_stride);
   }

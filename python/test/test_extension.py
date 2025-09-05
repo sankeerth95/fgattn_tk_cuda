@@ -93,6 +93,17 @@ if __name__ == "__main__":
 
     batch = 1
     D = 128
+
+
+    for heads in [ 24, ]:
+      for seq_len in [ 75856, ]:
+        print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
+        full_attn_test(batch, heads, seq_len, D)
+        attn_maxq_denom_test(batch, heads, seq_len, D)
+        sparse_attn_test(batch, heads, seq_len, D)
+        print('')
+
+
     for heads in [ 12, 40 ]:
       for seq_len in [ 32760, 75600 ]:
         print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
@@ -100,6 +111,7 @@ if __name__ == "__main__":
         attn_maxq_denom_test(batch, heads, seq_len, D)
         sparse_attn_test(batch, heads, seq_len, D)
         print('')
+
 
 
 

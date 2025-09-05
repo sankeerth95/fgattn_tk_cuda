@@ -180,7 +180,7 @@ __global__ void booleanmask_from_qk(__grid_constant__ const globals_fwd<D> g) {
     }
     for (int stage = 0; stage < min(kv_blocks, stages-1); ++stage) {
       asyncload::load_async_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, false>(
-        k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, k_loaded_to_smem[stage]
+        k_smem[stage], g.k, {batch, head, 0, 0}, stage * params_fwd<D>::kv_height, g.N, k_loaded_to_smem[stage]
       );
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
     }
@@ -195,7 +195,7 @@ __global__ void booleanmask_from_qk(__grid_constant__ const globals_fwd<D> g) {
       int prev_kv_idx = next_kv_idx - 1;
       int prev_stage = prev_kv_idx % stages;
 
-      asyncload::load_async_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, false>(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, k_loaded_to_smem[stage]);
+      asyncload::load_async_warpgroup<k_tile, globals_fwd<D>::k_gl, kittens::coord<k_tile>, false>(k_smem[stage], g.k, {batch, head, 0, 0},  next_kv_idx * params_fwd<D>::kv_height, g.N, k_loaded_to_smem[stage]);
       kittens::arrive(k_loaded_to_smem[stage]); // triggers an mbarrier.arrive.release instruction. 
 
       kittens::wait(compute_done[prev_stage], (prev_kv_idx/stages)%2);
@@ -243,7 +243,7 @@ __global__ void booleanmask_from_qk(__grid_constant__ const globals_fwd<D> g) {
 }
 
 
-template<int batch, int heads, int seq_len, int seq_blocks, int D>
+template<int batch, int heads, int seq_len, int seq_blocks, int D, int kv_seq_len = seq_len>
 void booleanmask_from_qk_cu_impl(int* d_booleanmask, float threshold, int mask_stride, float* d_o_max_q, float* d_o_norm, bf16* d_q, bf16* d_k) {
   constexpr size_t seq_padded = ((seq_len+128-1) / 128) * 128; // padding
   typename globals_fwd<D>::q_gl q{d_q, batch, heads, seq_len, D};
@@ -252,7 +252,7 @@ void booleanmask_from_qk_cu_impl(int* d_booleanmask, float threshold, int mask_s
   typename globals_fwd<D>::norm_gl  norm{d_o_norm, batch, heads, 1, seq_padded};
   typename globals_fwd<D>::booleanmask_gl booleanmask{d_booleanmask, batch, heads, seq_blocks, mask_stride};
 
-  globals_fwd<D> g{q, k, max_q, norm, booleanmask, threshold, mask_stride, seq_len};
+  globals_fwd<D> g{q, k, max_q, norm, booleanmask, threshold, mask_stride, kv_seq_len};
   constexpr int qo_producerblock =  params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
   constexpr int block_per_head = (seq_len + qo_producerblock - 1)/qo_producerblock;
   dim3 num_blocks(block_per_head, heads, batch);

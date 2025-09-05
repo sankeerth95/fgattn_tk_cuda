@@ -8,6 +8,7 @@ else:
 
 
 def baseline_attn(query, key, value, current_layer, ditrun, *args, **kwargs):
+    # print('inside baseline attention')
     batch, heads, seq_len, D = query.shape
     out = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
     spattn_interface.full_attn(out, query.contiguous(), key.contiguous(), value.contiguous())
@@ -131,5 +132,23 @@ def bitmaskcached_attn_cuda(query, key, value, current_layer, ditrun, *args, **k
         kv_indices, kv_num_indices = mask_cache.get_mask_from_cache(current_layer)
         spattn_interface.sp_attn(out, query.contiguous(), key.contiguous(), value.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
     return out
+
+
+def attn_2xmask_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
+    blocksz = kwargs["blocksz"]
+    B, H, S, D = query.shape
+
+    # print('inside attn_2xmask_cuda')
+    num_blocks = (S + blocksz - 1) // blocksz
+    mask_stride = 128*((S + 128 - 1)//128)
+
+    indices = 2*torch.arange(mask_stride, device='cuda', dtype=torch.int32) + torch.randint(0, 1, device='cuda', dtype=torch.int32)
+    kv_indices = indices.expand(B, H, num_blocks, mask_stride).contiguous()
+    kv_num_indices = torch.full((B, H, 1, num_blocks), S//2, device='cuda', dtype=torch.int32)
+
+    out = torch.empty([B, H, S, D], device='cuda', dtype=torch.bfloat16)
+    spattn_interface.sp_attn(out, query.contiguous(), key.contiguous(), value.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
+    return out
+
 
 

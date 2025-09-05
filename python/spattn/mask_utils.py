@@ -1,12 +1,12 @@
 import torch
-import nvidia.nvcomp
+# import nvidia.nvcomp
 if True:
     spattn_interface = torch.ops.cuda_attn
 else:
     import spattn.cuda_attn
     spattn_interface = spattn.cuda_attn
 
-nvcomp = nvidia.nvcomp
+# nvcomp = nvidia.nvcomp
 
 
 #########################################################################
@@ -198,7 +198,7 @@ def allindex_randompermutation_mask(B: int, H: int, max_stride: int, S: int, BLO
             torch.full([max_stride - S], max_stride, device='cuda', dtype=torch.int32)
         ]).view([max_stride,])
     else:
-        indices = torch.concat(torch.randperm(S, device='cuda', dtype=torch.int32))
+        indices = torch.randperm(S, device='cuda', dtype=torch.int32)
     kv_indices = indices.expand(B, H, num_blocks, max_stride).contiguous()
     return kv_indices, kv_num_indices
 

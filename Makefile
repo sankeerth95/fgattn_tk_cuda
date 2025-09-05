@@ -13,13 +13,13 @@ TARGET=a.out # H100
 
 # SRC=src/test_asyncload_wg.cu # H100
 # SRC=src/test_asyncload.cu # H100
-# SRC=src/test_fullattn_tma.cu # H100
+SRC=test/test_fullattn_tma.cu # H100
 # SRC=src/test_fullattn_wgload.cu # H100
-# SRC=src/test_fullattn_wgload_padded.cu # H100
+# SRC=test/test_fullattn_wgload_padded.cu # H100
 # SRC=src/test_sparseattn_asyncgatherload.cu # H100
 # SRC=src/test_sparseattn_asyncgatherload_padded.cu # H100
 # SRC=src/test_maxq_denom.cu # H100
-SRC=src/test_maxq_denom_attn.cu # H100
+# SRC=src/test_maxq_denom_attn.cu # H100
 
 
 # Default target

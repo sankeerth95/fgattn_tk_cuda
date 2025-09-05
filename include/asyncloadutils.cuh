@@ -71,7 +71,7 @@ __device__ inline float4 get_zeros_16bytes<bf16>(){
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
 template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, int N_THREADS=kittens::WARP_THREADS, bool load_nans=true>
-__device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const SV& row_indices, kittens::semaphore& bar) {
+__device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const COORD& idx, const SV& row_indices, const int N, kittens::semaphore& bar) {
 
     using T = typename ST::dtype;
     const int row_stride = src.template stride<axis>();
@@ -120,7 +120,8 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
             );
         } else {
             // if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
-            if (row_global < src.template shape<axis>()) {
+//            if (row_global < src.template shape<axis>()) {
+            if (row_global < N) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :
@@ -155,21 +156,30 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
 // overloaded function for asynchronous loading the same type yet again.
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, bool load_nans=true>
 __device__ static inline void load_async_gather_indexed(ST &dst, const GL &src, const COORD &idx, const SV& row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARP_THREADS, load_nans>(dst, src, idx, row_indices, bar);
+    const int N = src.template shape<2>();
+    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARP_THREADS, load_nans>(dst, src, idx, row_indices, N, bar);
 }
 
 
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, bool load_nans=true>
 __device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const GL &src, const COORD &idx, const SV& row_indices, kittens::semaphore& bar) {
-    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, row_indices, bar);
+    const int N = src.template shape<2>();
+    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, row_indices, N, bar);
 }
+
+
+template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, ducks::sv::all SV, bool load_nans=true>
+__device__ static inline void load_async_gather_indexed_warpgroup(ST &dst, const GL &src, const COORD &idx, const SV& row_indices, const int N, kittens::semaphore& bar) {
+    load_async_gather_indexed<2, false, ST, GL, COORD, SV, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, row_indices, N, bar);
+}
+
 
 
 
 // all is a concept that is concept checking for a shared tile type. THe thing we're using should be a shared tile .
 // ST and GL will be thunderkittens templates....
 template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, int N_THREADS=kittens::WARP_THREADS, bool load_nans=true>
-__device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COORD& idx, const int kv_idx, kittens::semaphore& bar) {
+__device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COORD& idx, const int kv_idx, const int N, kittens::semaphore& bar) {
 
     using T = typename ST::dtype;
     const int row_stride = src.template stride<axis>(); // 128
@@ -207,7 +217,7 @@ __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COO
             );
         } else {
             // if (row + unit_coord.template dim<axis>() < src.template shape<axis>()) {
-            if (row_global < src.template shape<axis>()) {
+            if (row_global < N) {
                 asm volatile(
                     "cp.async.cg.shared::cta.global.L2::128B [%0], [%1], 16;\n"
                     :
@@ -241,14 +251,23 @@ __device__ inline void load_async_and_mbarrier(ST& dst, const GL& src, const COO
 // overloaded function for asynchronous loading the same type yet again.
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, bool load_nans=true>
 __device__ static inline void load_async_warp(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
-    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARP_THREADS, load_nans>(dst, src, idx, kv_idx, bar);
+    const int N = src.template shape<2>();
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARP_THREADS, load_nans>(dst, src, idx, kv_idx, N, bar);
 }
 
 
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, bool load_nans=true>
 __device__ static inline void load_async_warpgroup(ST &dst, const GL &src, const COORD &idx, const int kv_idx, kittens::semaphore& bar) {
-    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, kv_idx, bar);
+    const int N = src.template shape<2>();
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, kv_idx, N, bar);
 }
+
+
+template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>, bool load_nans=true>
+__device__ static inline void load_async_warpgroup(ST &dst, const GL &src, const COORD &idx, const int kv_idx, const int N, kittens::semaphore& bar) {
+    load_async_and_mbarrier<2, false, ST, GL, COORD, kittens::WARPGROUP_THREADS, load_nans>(dst, src, idx, kv_idx, N, bar);
+}
+
 
 
 } // namespace asyncload
