@@ -184,7 +184,8 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
     attn_block_fragment_fl  qkt_block;
     attn_block_fragment_b16 qkt_block_bf16;
-    attn_block_fragment_fl  o_reg;
+    // attn_block_fragment_fl  o_reg;
+    rt_fl<qo_regtile, params_fwd<D>::tile_width>  o_reg;
 
     // rv dimension 16, stride kv_height
     typename attn_block_fragment_fl::col_vec max_vec;
@@ -266,7 +267,7 @@ void async_gather_attn_fwd_cu_impl(bf16* d_o, bf16* d_q, bf16* d_k, bf16* d_v, i
   constexpr int qo_producerblock = params_fwd<D>::qo_height*CONSUMER_WARPGROUPS;
   constexpr int block_per_head = (seq_len + qo_producerblock - 1)/qo_producerblock;
 
-  assert(mask_stride%128 == 0); // has to be an aligned mask
+  // assert(mask_stride%128 == 0); // has to be an aligned mask
   typename globals_fwd<D>::idx_gl idxs{d_idxs, batch, heads, block_per_head, mask_stride};
 
   globals_fwd<D> g{q, k, v, o, idxs, d_maxidxs, seq_len};

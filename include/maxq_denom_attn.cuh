@@ -177,7 +177,8 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
     attn_block_fragment_fl  qkt_block;
     attn_block_fragment_b16 qkt_block_bf16;
-    attn_block_fragment_fl  o_reg;
+    // attn_block_fragment_fl  o_reg;
+    rt_fl<qo_regtile, params_fwd<D>::tile_width> o_reg;
 
     // rv dimension 16, stride kv_height
     typename attn_block_fragment_fl::col_vec max_vec;

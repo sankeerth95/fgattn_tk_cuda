@@ -78,27 +78,31 @@ __device__ inline void load_async_gather_indexed(ST& dst, const GL& src, const C
 
     // we can handle this many rows each time we run a memcpy_async
     constexpr int elem_per_memcpy = sizeof(float4)/sizeof(typename ST::dtype); // this is 8
-    constexpr int memcpy_per_row = dst.cols / elem_per_memcpy; // 128 / 8 = 16
-    constexpr int total_calls = (dst.height*dst.width * kittens::TILE_ROW_DIM<T>*kittens::TILE_COL_DIM<T> + N_THREADS*elem_per_memcpy-1) / (N_THREADS*elem_per_memcpy); // this is 16, not that much per thread
+    constexpr int memcpy_per_row = dst.cols / elem_per_memcpy; // 128 / 8 = 16 (64/8 = 8) threads to load one row
+    constexpr int total_calls = (dst.height*dst.width * kittens::TILE_ROW_DIM<T>*kittens::TILE_COL_DIM<T> + N_THREADS*elem_per_memcpy-1) / (N_THREADS*elem_per_memcpy); // this is 16(8?), not that much per thread
 
     coord<> unit_coord = idx.template unit_coord<axis, 3>(); // {b, d, r, c} # the start of the tile - index in global memory. Not in the tile index granularity 
     typename GL::dtype *src_ptr = (typename GL::dtype*)&src[unit_coord];
     uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(&dst.data[0]));
     uint32_t bar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(&bar));
-    const int laneid = threadIdx.x % N_THREADS; // 0 through 32
-
+    const int laneid = threadIdx.x % N_THREADS; // 0 through N_THREADS-1
 
     // remapping
-    int row_indices_local[16];
-    int shmem_location = (laneid/16) + 8*(laneid%16); // 32 values per warp 4 way bank conflict arises right now.
+    // int row_indices_local[16];
+    // int shmem_location = (laneid/16) + 8*(laneid%16); // 32 values per warp 4 way bank conflict arises right now.
+
+    int row_indices_local[total_calls];
+    int shmem_location = (laneid/memcpy_per_row) + (N_THREADS/memcpy_per_row)*(laneid%memcpy_per_row); // 32 values per warp 4 way bank conflict arises right now.
+
     int row_indices_local_shfled = row_indices[shmem_location]; // t0->a0, t1->a8, t2->a16, ... t15->a120, t16->a1, t17->a9, .... t32->a121
     __syncwarp(); // all registers in the warp loaded the value
 
     // broadcast value loaded from shmem to all threads.
     int warplane = threadIdx.x%32;
-    int srclane_base = (warplane < 16) ? 0 : 16;
+    // int srclane_base = (warplane < 16) ? 0 : 16;
+    int srclane_base = memcpy_per_row * (warplane/memcpy_per_row);
     #pragma unroll
-    for(int i = 0; i < 16; i++) {
+    for(int i = 0; i < total_calls; i++) {
       int srcLane = i + srclane_base;
       row_indices_local[i] = __shfl_sync(0xFFFFFFFF, row_indices_local_shfled, srcLane); //
       // row_indices_local[i] = 8*i + (laneid/16); // base case

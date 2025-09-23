@@ -67,6 +67,10 @@ void attn_sparse_fwd_wg_impl (
     assert(mask_stride % 128 == 0);
     async_gather_attn::async_gather_attn_fwd_cu_impl<1, 24, 75856, 128>(o, q, k, v, kv_indices, num_kv_indices, mask_stride);
 
+  } else if (batch == 1 && heads == 24 && seq == 32760 && D == 64) {
+    assert(mask_stride % 128 == 0);
+    async_gather_attn::async_gather_attn_fwd_cu_impl<1, 24, 32760, 64>(o, q, k, v, kv_indices, num_kv_indices, mask_stride);
+
   } else {
     printf("kernel not found: %d %d %d %d\n", batch, heads, seq, D);
     assert(false);
@@ -129,6 +133,11 @@ void attn_maxq_denom_impl(
     } else if (batch == 1 && heads == 24 && seq == 75856 && D == 128) {
       // HACK: special case to make this work with hunyuan video
       maxq_denom_attn::attn_fwd_cu_impl<1, 24, 75856, 128, 75856-245>( 
+          d_o, d_o_max_q, d_o_norm, d_q, d_k, d_v, seq_padding
+      );
+
+    } else if (batch == 1 && heads == 24 && seq == 32760 && D == 64) {
+      maxq_denom_attn::attn_fwd_cu_impl<1, 24, 32760, 64>(
           d_o, d_o_max_q, d_o_norm, d_q, d_k, d_v, seq_padding
       );
 
