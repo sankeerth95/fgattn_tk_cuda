@@ -51,10 +51,12 @@ def attn_maxq_denom_test(batch, heads, seq_len, D):
     denom = torch.empty((batch, heads, 1, seq_padded), dtype=torch.float, device="cuda")
     spattn_interface.fullattn_maxq_denom(o_attn_maxq_denom, max_q, denom, q.contiguous(), k.contiguous(), v.contiguous())
     maxdiff = torch.max(torch.abs(o_attn_maxq_denom - expected_torch_flashattn))
-    maxdiff = torch.max(torch.abs(o_attn_maxq_denom - expected_torch_flashattn_f32))
+    maxdiff32 = torch.max(torch.abs(o_attn_maxq_denom - expected_torch_flashattn_f32))
+    maxdiff1632 = torch.max(torch.abs(expected_torch_flashattn - expected_torch_flashattn_f32))
     print(f"num nans: {o_attn_maxq_denom.isnan().sum()} out of {o_attn_maxq_denom.numel()}")
     print(f"Max difference between mine and torch implementations: {maxdiff.item()}")
-    print(f"Max difference between mine and torch32 implementations: {maxdiff.item()}")
+    print(f"Max difference between mine and torch32 implementations: {maxdiff32.item()}")
+    print(f"Max difference between torch16 and torch32 implementations: {maxdiff1632.item()}")
     print('##########################################################')
 
 
@@ -82,10 +84,12 @@ def sparse_attn_test(batch, heads, seq_len, D):
     torch.cuda.synchronize()
 
     maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn))
-    maxdiff = torch.max(torch.abs(o_sparse - expected_torch_flashattn_f32))
+    maxdiff32 = torch.max(torch.abs(o_sparse - expected_torch_flashattn_f32))
+    maxdiff1632 = torch.max(torch.abs(expected_torch_flashattn - expected_torch_flashattn_f32))
     print(f"num nans: {o_sparse.isnan().sum()} out of {o_sparse.numel()}")
     print(f"Max difference between sparse and torch implementations: {maxdiff.item()}")
-    print(f"Max difference between sparse and torch32 implementations: {maxdiff.item()}")
+    print(f"Max difference between sparse and torch32 implementations: {maxdiff32.item()}")
+    print(f"Max difference between torch16 and torch32 implementations: {maxdiff1632.item()}")
     print('##########################################################')
 
 
@@ -95,24 +99,32 @@ if __name__ == "__main__":
     D = 128
 
 
+    # for heads in [ 24, ]:
+    #   for seq_len in [ 75856, ]:
+    #     print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
+    #     full_attn_test(batch, heads, seq_len, D)
+    #     attn_maxq_denom_test(batch, heads, seq_len, D) # will go wrong cuz of how hunyuan is organized
+    #     sparse_attn_test(batch, heads, seq_len, D)
+    #     print('')
+
+
+    # for heads in [ 12, 40 ]:
+    #   for seq_len in [ 32760, 75600 ]:
+    #     print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
+    #     full_attn_test(batch, heads, seq_len, D)
+    #     attn_maxq_denom_test(batch, heads, seq_len, D)
+    #     sparse_attn_test(batch, heads, seq_len, D)
+    #     print('')
+
+
+
+    D = 64
     for heads in [ 24, ]:
-      for seq_len in [ 75856, ]:
+      for seq_len in [ 32760, ]:
         print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
         full_attn_test(batch, heads, seq_len, D)
         attn_maxq_denom_test(batch, heads, seq_len, D)
         sparse_attn_test(batch, heads, seq_len, D)
         print('')
-
-
-    for heads in [ 12, 40 ]:
-      for seq_len in [ 32760, 75600 ]:
-        print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
-        full_attn_test(batch, heads, seq_len, D)
-        attn_maxq_denom_test(batch, heads, seq_len, D)
-        sparse_attn_test(batch, heads, seq_len, D)
-        print('')
-
-
-
 
 
