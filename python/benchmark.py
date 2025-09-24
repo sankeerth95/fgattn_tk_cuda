@@ -4,9 +4,12 @@ import spattn.cuda_attn as spattn_interface
 import spattn.mask_utils as mask_utils
 
 
-def fullattn_maxq_denom_benchmark():
-    q = torch.load('../q6_3012.pt').to('cuda')
-    k = torch.load('../k6_3012.pt').to('cuda')
+def fullattn_maxq_denom_benchmark(batch, heads, seq_len, D):
+    # q = torch.load('../q6_3012.pt').to('cuda')
+    # k = torch.load('../k6_3012.pt').to('cuda')
+    q = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    k = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    v = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
     thresh = 0.5 * 1./32760
 
     N = 100
@@ -23,23 +26,28 @@ def fullattn_maxq_denom_benchmark():
     print(f"Time to generate boolean mask: {(t2 - t1) / N * 1000:.4f} ms")
 
 
-def sparse_attention_benchmark():
-    q = torch.load('./testdata/q6_3012.pt').to('cuda')
-    k = torch.load('./testdata/k6_3012.pt').to('cuda')
+def sparse_attention_benchmark(batch, heads, seq_len, D):
+    # q = torch.load('./testdata/q6_3012.pt').to('cuda')
+    # k = torch.load('./testdata/k6_3012.pt').to('cuda')
+    q = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    k = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    v = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
 
     num_indices_sweep_block = 4*(seq_len//64)
-    for i in  range(16):
+    for i in  range(0, 16):
         numidxs = i * num_indices_sweep_block
-        kv_indices, kv_num_indices = mask_utils.allindex_randompermutation_mask(batch, heads, seq_padded, numidxs, 128)
+        mask_stride = 128*((seq_len + 128 - 1)//128)
+        # kv_indices, kv_num_indices = mask_utils.allindex_randompermutation_mask(batch, heads, mask_stride, numidxs, 128)
+        # kv_indices, kv_num_indices = mask_utils.allindex_randompermutation_mask(batch, heads, mask_stride, seq_len, 128)
+        kv_indices, kv_num_indices = mask_utils.sparseindex_randompermutation_mask(batch, heads, mask_stride, seq_len, numidxs, 128)
 
-        print('benchmarking for seq_length = ', numidxs, ' out of ', seq_len, 'sequence')
+        print('benchmarking for seq_length = ', numidxs, ' out of ', seq_len, 'sequence', 'percent = ', numidxs / seq_len * 100)
 
-        N = 100
+        N = 30
         torch.cuda.synchronize()
         start = time.time()
         for _ in range(N):
             o_sparse = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
-            seq_padded = 128*((seq_len + 128 - 1)//128)
             spattn_interface.sp_attn(o_sparse, q.contiguous(), k.contiguous(), v.contiguous(), kv_indices.contiguous(), kv_num_indices.contiguous())
         torch.cuda.synchronize()
         end = time.time()
@@ -47,9 +55,12 @@ def sparse_attention_benchmark():
 
 
 
-def maxq_denom_benchmark():
-    q = torch.load('../q6_3012.pt').to('cuda')
-    k = torch.load('../k6_3012.pt').to('cuda')
+def maxq_denom_benchmark(batch, heads, seq_len, D):
+    # q = torch.load('../q6_3012.pt').to('cuda')
+    # k = torch.load('../k6_3012.pt').to('cuda')
+    q = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    k = torch.randn([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    
     thresh = 0.5 * 1./32760
 
     N = 100
@@ -115,9 +126,9 @@ if __name__ == "__main__":
     batch = 1
     D = 128
     for heads in [ 12, 40 ]:
-      for seq_len in [ 32760, 75600 ]:
+      for seq_len in [ 32768, 75600 ]:
         print('batch, heads, seq_len, D = ', batch, heads, seq_len, D)
-        fullattn_maxq_denom_benchmark(batch, heads, seq_len, D)
+        # fullattn_maxq_denom_benchmark(batch, heads, seq_len, D)
         sparse_attention_benchmark(batch, heads, seq_len, D)
         maxq_denom_benchmark(batch, heads, seq_len, D)
         packbits_benchmark(batch, heads, seq_len, blocksz)

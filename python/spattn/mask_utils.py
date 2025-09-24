@@ -203,6 +203,21 @@ def allindex_randompermutation_mask(B: int, H: int, max_stride: int, S: int, BLO
     return kv_indices, kv_num_indices
 
 
+def sparseindex_randompermutation_mask(B: int, H: int, mask_stride: int, S: int, numidxs: int, BLOCKSZ: int):
+    num_blocks = (S + BLOCKSZ - 1) // BLOCKSZ
+    kv_num_indices = torch.full((B, H, num_blocks), numidxs, device='cuda', dtype=torch.int32)
+
+    if mask_stride > numidxs:
+        indices = torch.concat([
+            torch.randperm(S, device='cuda', dtype=torch.int32)[:numidxs], 
+            torch.full([mask_stride - numidxs], mask_stride, device='cuda', dtype=torch.int32)
+        ]).view([mask_stride,])
+    else:
+        indices = torch.randperm(S, device='cuda', dtype=torch.int32)[:numidxs]
+    kv_indices = indices.expand(B, H, num_blocks, mask_stride).contiguous()
+    return kv_indices, kv_num_indices
+
+
 def qk_bitmask(q, k, thresh=0.001, blocksz = 128):
     batches = q.shape[0]
     numheads = q.shape[1]
