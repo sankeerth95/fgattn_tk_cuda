@@ -188,8 +188,7 @@ void attn_fwd_kernel(__grid_constant__ const globals_fwd<D> g) {
 
     constexpr float ln2inv = 1.44269504089f;
     // constexpr float scale_factor = ln2inv * 1.0f/sqrt(D);
-    // constexpr float scale_factor = ln2inv * 0.08838834764f;
-    const float scale_factor = ln2inv * 0.125f;
+    constexpr float scale_factor = ln2inv * 0.125f;
     constexpr int kv_height_per_warp = params_fwd<D>::kv_height/WARPGROUP_WARPS;
 
     kittens::neg_infty(max_vec);
