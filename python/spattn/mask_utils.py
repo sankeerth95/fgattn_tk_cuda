@@ -1,12 +1,11 @@
 import torch
-# import nvidia.nvcomp
+import math
+from nvidia import nvcomp
 if True:
     spattn_interface = torch.ops.cuda_attn
 else:
     import spattn.cuda_attn
     spattn_interface = spattn.cuda_attn
-
-# nvcomp = nvidia.nvcomp
 
 
 #########################################################################
@@ -415,9 +414,169 @@ def qk_topkmask_indices(q, k, select_k, B: int, H: int, S: int, D: int, BLOCKSZ:
     print(kv_indices)
     kv_num_indices = torch.full([B, H, seq_by_blksz], select_k, device=topk.indices.device, dtype=torch.int32)
     return kv_indices, kv_num_indices
+# 11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+
+def qk_topcdfmask_indices(q, k, select_k_placeholder, B: int, H: int, S: int, D: int, BLOCKSZ: int, 
+                          tau=0.90, gamma_q=0.6, gamma_k=0.6):
+    """
+    Top-CDF sparse attention mask with self-similarity gating.
+    
+    Args:
+        q: [B, H, S, D] query tensor
+        k: [B, H, S, D] key tensor  
+        select_k_placeholder: unused, kept for API consistency with qk_topkmask_indices
+        B, H, S, D: batch, heads, sequence, dimension
+        BLOCKSZ: block size for partitioning
+        tau: Top-CDF threshold in (0,1], keep blocks until cumsum >= tau
+        gamma_q: self-similarity threshold for Q blocks
+        gamma_k: self-similarity threshold for K blocks
+        
+    Returns:
+        kv_indices: [B, H, n_q, max_stride] (int32) with sentinel padding
+        kv_num_indices: [B, H, n_q] (int32)
+    """
+    device = q.device
+    dtype = q.dtype
+    
+    # 1. Block partitioning - compute block means
+    def blockmean(x):
+        """Compute mean-pooled block representatives, handling last short block."""
+        seqblocks_floor = S // BLOCKSZ
+        if seqblocks_floor > 0:
+            x_prefix = x[:, :, :seqblocks_floor * BLOCKSZ, :].contiguous()
+            mean_full_blocks = x_prefix.view(B, H, seqblocks_floor, BLOCKSZ, D).mean(dim=3)
+        else:
+            mean_full_blocks = torch.empty(B, H, 0, D, device=device, dtype=dtype)
+        
+        remainder = S % BLOCKSZ
+        if remainder > 0:
+            mean_remainder_block = x[:, :, seqblocks_floor * BLOCKSZ:, :].mean(dim=2, keepdim=True)
+        else:
+            mean_remainder_block = torch.empty(B, H, 0, D, device=device, dtype=dtype)
+        
+        mean_ = torch.cat((mean_full_blocks, mean_remainder_block), dim=2)
+        return mean_
+    
+    n_q = (S + BLOCKSZ - 1) // BLOCKSZ
+    n_k = n_q  # self-attention
+    
+    q_bar = blockmean(q)  # [B, H, n_q, D]
+    k_bar = blockmean(k)  # [B, H, n_k, D]
+    
+    # 2. Self-similarity check (cosine similarity within each block)
+    def compute_self_similarity(x, x_bar):
+        """Compute mean cosine similarity between tokens and their block mean."""
+        seqblocks_floor = S // BLOCKSZ
+        
+        # Normalize for cosine similarity
+        x_norm = torch.nn.functional.normalize(x, p=2, dim=-1)
+        x_bar_norm = torch.nn.functional.normalize(x_bar, p=2, dim=-1)
+        
+        similarities = []
+        
+        # Full blocks
+        if seqblocks_floor > 0:
+            x_blocks = x_norm[:, :, :seqblocks_floor * BLOCKSZ, :].reshape(B, H, seqblocks_floor, BLOCKSZ, D)
+
+            x_bar_blocks = x_bar_norm[:, :, :seqblocks_floor, :].unsqueeze(3)  # [B, H, n_blocks, 1, D]
+            cos_sim = (x_blocks * x_bar_blocks).sum(dim=-1)  # [B, H, n_blocks, BLOCKSZ]
+            mean_cos = cos_sim.mean(dim=-1)  # [B, H, n_blocks]
+            similarities.append(mean_cos)
+        
+        # Last short block
+        remainder = S % BLOCKSZ
+        if remainder > 0:
+            x_remainder = x_norm[:, :, seqblocks_floor * BLOCKSZ:, :]
+            x_bar_remainder = x_bar_norm[:, :, seqblocks_floor:seqblocks_floor+1, :]
+            cos_sim_remainder = (x_remainder * x_bar_remainder).sum(dim=-1)  # [B, H, remainder]
+            mean_cos_remainder = cos_sim_remainder.mean(dim=-1, keepdim=True)  # [B, H, 1]
+            similarities.append(mean_cos_remainder)
+        
+        if len(similarities) > 0:
+            return torch.cat(similarities, dim=2)  # [B, H, n_blocks]
+        else:
+            return torch.empty(B, H, 0, device=device, dtype=dtype)
+    
+    q_self_sim = compute_self_similarity(q, q_bar)  # [B, H, n_q]
+    k_self_sim = compute_self_similarity(k, k_bar)  # [B, H, n_k]
+    
+    q_similar = (q_self_sim >= gamma_q)  # [B, H, n_q]
+    k_similar = (k_self_sim >= gamma_k)  # [B, H, n_k]
+    
+    # 3. Proxy attention at block level
+# q_bar: [B,H,n_q,D], k_bar: [B,H,n_k,D]
+    logits = q_bar @ k_bar.transpose(-1, -2)   # [B,H,n_q,n_k]
+    # [-1 is D, -2 is n_k]  -> shape becomes [B, H, D, n_k]
+    logits = logits / math.sqrt(D)
+    
+    # Mask logits: set non-similar blocks to -inf before softmax
+    q_similar_expanded = q_similar.unsqueeze(-1)  # [B, H, n_q, 1]
+    k_similar_expanded = k_similar.unsqueeze(-2)  # [B, H, 1, n_k]
+    
+    # Temporarily mask out non-similar blocks
+
+    neg_inf = torch.finfo(logits.dtype).min  # works for fp16/bf16/fp32
+    #masked_fill(condition, value) returns a new tensor where every element with condition==True is replaced by value.
+    logits_masked = logits.masked_fill(~q_similar_expanded, neg_inf)
+    logits_masked = logits_masked.masked_fill(~k_similar_expanded, neg_inf)
+    #sets entire columns (all queries for a given key block) to neg_inf wherever the key block is non-self-similar.
+    # 4. Top-CDF selection
+    P = torch.softmax(logits_masked, dim=-1)  # [B, H, n_q, n_k]
+    
+    # Handle NaN from all -inf rows (will apply force-keep rule)
+    P = torch.nan_to_num(P, nan=0.0)
+    
+    # Sort probabilities descending and compute cumsum
+    P_sorted, sorted_indices = torch.sort(P, dim=-1, descending=True)#[B,H,n_q,n_k]
+    P_cumsum = torch.cumsum(P_sorted, dim=-1)#[B,H,n_q,n_k]
+    
+    # Compute row sums for threshold
+    row_sums = P.sum(dim=-1, keepdim=True)  # [B, H, n_q, 1]
+    threshold = tau * row_sums#[B,H,n_q,1]
+    
+    # Keep blocks until cumsum >= threshold
+
+    keep_sorted = P_cumsum <= threshold          # strictly below tau mass
+    keep_sorted[..., 0] |= (P_sorted[..., 0] > 0)   # always keep top-1 if any mass
+
+    # Map back to original order
+    keep_mask = torch.zeros_like(P, dtype=torch.bool)
+    keep_mask.scatter_(-1, sorted_indices, keep_sorted)
+    
+    # 5. Force-keep rules
+    # If q_similar=False for a row → keep all columns in that row
+    # If k_similar=False for a column → keep that column for all rows
+    keep_mask |= ~q_similar.unsqueeze(-1)   # keep whole row if q is non-self-similar
+    keep_mask |= ~k_similar.unsqueeze(-2)   # keep whole column if k is non-self-similar
+    #keep_mask[b, h, j, i] (True = keep key-block j for query-block i)
+    # 6. Convert boolean mask to index mask
+    # Process each (B, H) slice
+    all_kv_indices = []
+    all_kv_num_indices = []
+    
+    
+    for b in range(B):
+        batch_kv_indices = []
+        batch_kv_num_indices = []
+        
+        for h in range(H):
+            boolean_mask_2d = keep_mask[b, h]  # [n_q, n_k]
+            kv_indices_2d, kv_num_indices_2d = boolean_to_index_mask_2d(boolean_mask_2d)
+            batch_kv_indices.append(kv_indices_2d.unsqueeze(0))
+            batch_kv_num_indices.append(kv_num_indices_2d.unsqueeze(0))
+        
+        all_kv_indices.append(torch.cat(batch_kv_indices, dim=0).unsqueeze(0))
+        all_kv_num_indices.append(torch.cat(batch_kv_num_indices, dim=0).unsqueeze(0))
+    
+    kv_indices = torch.cat(all_kv_indices, dim=0)  # [B, H, n_q, max_stride]
+    kv_num_indices = torch.cat(all_kv_num_indices, dim=0)  # [B, H, n_q]
+    kv_indices = kv_indices.to(torch.int32)
+    kv_num_indices = kv_num_indices.to(torch.int32)
+    
+    return kv_indices, kv_num_indices
 
 
-
+# end11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
 def pack(bool_tensor):
     grouped_shape = (*bool_tensor.shape[:-1], bool_tensor.shape[-1] // 8, 8)
     grouped_tensor = bool_tensor.reshape(grouped_shape)
