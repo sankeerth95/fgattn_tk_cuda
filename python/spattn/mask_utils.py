@@ -540,17 +540,21 @@ def qk_topcdfmask_indices(q, k, B: int, H: int, S: int, D: int, BLOCKSZ: int,
     P = torch.nan_to_num(P, nan=0.0)
     
     # Sort probabilities descending and compute cumsum
-    P_sorted, sorted_indices = torch.sort(P, dim=-1, descending=True)#[B,H,n_q,n_k]
-    P_cumsum = torch.cumsum(P_sorted, dim=-1)#[B,H,n_q,n_k]
+    P_sorted, sorted_indices = torch.sort(P, dim=-1, descending=True)  # [B,H,n_q,n_k]
+    P_cumsum = torch.cumsum(P_sorted, dim=-1)  # [B,H,n_q,n_k]
     
     # Compute row sums for threshold
     row_sums = P.sum(dim=-1, keepdim=True)  # [B, H, n_q, 1]
-    threshold = tau * row_sums#[B,H,n_q,1]
+    threshold = tau * row_sums  # [B,H,n_q,1]
     
-    # Keep blocks until cumsum >= threshold
-
-    keep_sorted = P_cumsum <= threshold          # strictly below tau mass
-    keep_sorted[..., 0] |= (P_sorted[..., 0] > 0)   # always keep top-1 if any mass
+    # Keep blocks: strictly before reaching tau mass, PLUS the first crossing index
+    keep_sorted = (P_cumsum < threshold)                      # strictly below tau mass
+    cross = (P_cumsum >= threshold)                           # [B,H,n_q,n_k]
+    first_cross_idx = cross.float().argmax(dim=-1, keepdim=True)  # [B,H,n_q,1]
+    keep_sorted.scatter_(-1, first_cross_idx, True)           # include crossing index
+    
+    # Guarantee at least top-1 when a row has any mass
+    keep_sorted[..., 0] |= (P_sorted[..., 0] > 0)
 
     # Map back to original order
     keep_mask = torch.zeros_like(P, dtype=torch.bool)
@@ -562,42 +566,32 @@ def qk_topcdfmask_indices(q, k, B: int, H: int, S: int, D: int, BLOCKSZ: int,
     keep_mask |= ~q_similar.unsqueeze(-1)   # keep whole row if q is non-self-similar
     keep_mask |= ~k_similar.unsqueeze(-2)   # keep whole column if k is non-self-similar
     #keep_mask[b, h, j, i] (True = keep key-block j for query-block i)
-    # 6. Convert block-level boolean mask to TOKEN-level index mask
-    # Build per-(B,H) boolean mask over tokens with stride seq_padded
+    # 6. Convert block-level boolean mask to TOKEN-level index mask (VECTORIZED)
     seq_padded = 128 * ((S + 128 - 1) // 128)
-    #Example: if S=1000, then seq_padded=1024.
-    all_kv_indices = []
-    all_kv_num_indices = []
-
-    for b in range(B):
-        batch_kv_indices = []
-        batch_kv_num_indices = []
-
-        for h in range(H):
-            # token_keep_mask: [n_q, seq_padded] boolean
-            token_keep_mask = torch.zeros((n_q, seq_padded), device=device, dtype=torch.bool)
-
-            # For each query block row, expand kept key blocks into token ranges
-            for qi in range(n_q):
-                kept_blocks = torch.nonzero(keep_mask[b, h, qi], as_tuple=False).flatten()
-                if kept_blocks.numel() == 0:
-                    continue
-                # Mark tokens in each kept block
-                for kj in kept_blocks.tolist():
-                    start = kj * BLOCKSZ
-                    end = min((kj + 1) * BLOCKSZ, S)
-                    if start < end:
-                        token_keep_mask[qi, start:end] = True
-
-            kv_indices_2d, kv_num_indices_2d = boolean_to_index_mask_2d(token_keep_mask)
-            batch_kv_indices.append(kv_indices_2d.unsqueeze(0))
-            batch_kv_num_indices.append(kv_num_indices_2d.unsqueeze(0))
-
-        all_kv_indices.append(torch.cat(batch_kv_indices, dim=0).unsqueeze(0))
-        all_kv_num_indices.append(torch.cat(batch_kv_num_indices, dim=0).unsqueeze(0))
-
-    kv_indices = torch.cat(all_kv_indices, dim=0)  # [B, H, n_q, seq_padded]
-    kv_num_indices = torch.cat(all_kv_num_indices, dim=0)  # [B, H, n_q]
+    
+    # Build block→token expansion matrix T: [n_k, seq_padded] (cache-friendly)
+    block_ids = torch.arange(n_k, device=device)
+    starts = block_ids * BLOCKSZ
+    ends = torch.minimum(starts + BLOCKSZ, torch.tensor(S, device=device))
+    token_ids = torch.arange(seq_padded, device=device)
+    
+    # T[kj, token_id] = True if token_id is in block kj
+    T = (token_ids.unsqueeze(0) >= starts.unsqueeze(1)) & \
+        (token_ids.unsqueeze(0) < ends.unsqueeze(1))  # [n_k, seq_padded]
+    
+    # Batched matmul: token_keep_mask = keep_mask @ T
+    # Reshape to 2D: [B*H*n_q, n_k] @ [n_k, seq_padded] → [B*H*n_q, seq_padded]
+    keep_float = keep_mask.to(torch.float32).reshape(B * H * n_q, n_k)
+    T_float = T.to(torch.float32)
+    token_keep_mask = torch.matmul(keep_float, T_float).reshape(B, H, n_q, seq_padded) > 0
+    
+    # Use CUDA helper to convert boolean → index mask (single batched call)
+    kv_indices = torch.full([B, H, n_q, seq_padded], seq_padded, device=device, dtype=torch.int)
+    kv_num_indices = torch.zeros([B, H, n_q], device=device, dtype=torch.int)
+    spattn_interface.booleanmask_to_indexmask(
+        kv_indices, kv_num_indices, token_keep_mask.to(torch.int).contiguous(), S
+    )
+    
     kv_indices = kv_indices.to(torch.int32)
     kv_num_indices = kv_num_indices.to(torch.int32)
     
