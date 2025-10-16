@@ -151,4 +151,28 @@ def attn_2xmask_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
     return out
 
 
+def attn_topcdf_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
+    """Sparse attention using Top-CDF mask with self-similarity gating."""
+    tau = kwargs.get("tau", 0.90)
+    gamma_q = kwargs.get("gamma_q", 0.6)
+    gamma_k = kwargs.get("gamma_k", 0.6)
+    blocksz = kwargs["blocksz"]
+    
+    batch, heads, seq_len, D = query.shape
+    out = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
+    
+    # Compute Top-CDF sparse mask
+    kv_indices, kv_num_indices = mask_utils.qk_topcdfmask_indices(
+        query, key, batch, heads, seq_len, D, blocksz,
+        tau=tau, gamma_q=gamma_q, gamma_k=gamma_k
+    )
+    
+    # Run sparse attention with computed mask
+    spattn_interface.sp_attn(
+        out, query.contiguous(), key.contiguous(), value.contiguous(), 
+        kv_indices.contiguous(), kv_num_indices.contiguous()
+    )
+    return out
+
+
 

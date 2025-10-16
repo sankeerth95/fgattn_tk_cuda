@@ -416,24 +416,37 @@ def qk_topkmask_indices(q, k, select_k, B: int, H: int, S: int, D: int, BLOCKSZ:
     return kv_indices, kv_num_indices
 # 11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
 
-def qk_topcdfmask_indices(q, k, select_k_placeholder, B: int, H: int, S: int, D: int, BLOCKSZ: int, 
+def qk_topcdfmask_indices(q, k, B: int, H: int, S: int, D: int, BLOCKSZ: int, 
                           tau=0.90, gamma_q=0.6, gamma_k=0.6):
     """
-    Top-CDF sparse attention mask with self-similarity gating.
-    
-    Args:
-        q: [B, H, S, D] query tensor
-        k: [B, H, S, D] key tensor  
-        select_k_placeholder: unused, kept for API consistency with qk_topkmask_indices
-        B, H, S, D: batch, heads, sequence, dimension
-        BLOCKSZ: block size for partitioning
-        tau: Top-CDF threshold in (0,1], keep blocks until cumsum >= tau
-        gamma_q: self-similarity threshold for Q blocks
-        gamma_k: self-similarity threshold for K blocks
-        
-    Returns:
-        kv_indices: [B, H, n_q, max_stride] (int32) with sentinel padding
-        kv_num_indices: [B, H, n_q] (int32)
+    Generate a token-level sparse index mask using Top-CDF selection with self-similarity gating.
+
+    Inputs:
+      - q, k: [B, H, S, D] (self-attention)
+      - B, H, S, D, BLOCKSZ: scalars
+      - tau: Top-CDF threshold in (0, 1]; for each query block row, keep the smallest set
+             of key tokens whose cumulative probability ≥ tau.
+      - gamma_q, gamma_k: self-similarity thresholds in [0, 1] for query/key blocks.
+
+    Behavior:
+      - Partition sequence into blocks of size BLOCKSZ (last block may be shorter).
+      - Compute block means Q̄, K̄ and self-similarity flags per block via cosine similarity.
+      - Compute proxy logits (Q̄ @ K̄^T / sqrt(D)), softmax → per-row distributions.
+      - Top-CDF per row at the block level, then expand kept key blocks to token ranges.
+      - Force-keep rules:
+        - If a query block is non-self-similar → keep all key tokens for that row.
+        - If a key block is non-self-similar → keep all its tokens for every row.
+
+    Outputs:
+      - kv_indices: [B, H, n_q, seq_padded] int32
+          Token indices in [0, S), padded with sentinel == seq_padded.
+          seq_padded = 128 * ceil(S / 128).
+      - kv_num_indices: [B, H, n_q] int32
+          Number of valid token indices per (B,H,row).
+
+    Notes:
+      - Use BLOCKSZ=128 to align with CUDA kernels.
+      - No causal/padding logic beyond the last short block.
     """
     device = q.device
     dtype = q.dtype
@@ -549,26 +562,41 @@ def qk_topcdfmask_indices(q, k, select_k_placeholder, B: int, H: int, S: int, D:
     keep_mask |= ~q_similar.unsqueeze(-1)   # keep whole row if q is non-self-similar
     keep_mask |= ~k_similar.unsqueeze(-2)   # keep whole column if k is non-self-similar
     #keep_mask[b, h, j, i] (True = keep key-block j for query-block i)
-    # 6. Convert boolean mask to index mask
-    # Process each (B, H) slice
+    # 6. Convert block-level boolean mask to TOKEN-level index mask
+    # Build per-(B,H) boolean mask over tokens with stride seq_padded
+    seq_padded = 128 * ((S + 128 - 1) // 128)
+    #Example: if S=1000, then seq_padded=1024.
     all_kv_indices = []
     all_kv_num_indices = []
-    
-    
+
     for b in range(B):
         batch_kv_indices = []
         batch_kv_num_indices = []
-        
+
         for h in range(H):
-            boolean_mask_2d = keep_mask[b, h]  # [n_q, n_k]
-            kv_indices_2d, kv_num_indices_2d = boolean_to_index_mask_2d(boolean_mask_2d)
+            # token_keep_mask: [n_q, seq_padded] boolean
+            token_keep_mask = torch.zeros((n_q, seq_padded), device=device, dtype=torch.bool)
+
+            # For each query block row, expand kept key blocks into token ranges
+            for qi in range(n_q):
+                kept_blocks = torch.nonzero(keep_mask[b, h, qi], as_tuple=False).flatten()
+                if kept_blocks.numel() == 0:
+                    continue
+                # Mark tokens in each kept block
+                for kj in kept_blocks.tolist():
+                    start = kj * BLOCKSZ
+                    end = min((kj + 1) * BLOCKSZ, S)
+                    if start < end:
+                        token_keep_mask[qi, start:end] = True
+
+            kv_indices_2d, kv_num_indices_2d = boolean_to_index_mask_2d(token_keep_mask)
             batch_kv_indices.append(kv_indices_2d.unsqueeze(0))
             batch_kv_num_indices.append(kv_num_indices_2d.unsqueeze(0))
-        
+
         all_kv_indices.append(torch.cat(batch_kv_indices, dim=0).unsqueeze(0))
         all_kv_num_indices.append(torch.cat(batch_kv_num_indices, dim=0).unsqueeze(0))
-    
-    kv_indices = torch.cat(all_kv_indices, dim=0)  # [B, H, n_q, max_stride]
+
+    kv_indices = torch.cat(all_kv_indices, dim=0)  # [B, H, n_q, seq_padded]
     kv_num_indices = torch.cat(all_kv_num_indices, dim=0)  # [B, H, n_q]
     kv_indices = kv_indices.to(torch.int32)
     kv_num_indices = kv_num_indices.to(torch.int32)
