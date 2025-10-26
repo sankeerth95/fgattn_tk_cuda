@@ -152,26 +152,92 @@ def attn_2xmask_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
 
 
 def attn_topcdf_cuda(query, key, value, current_layer, ditrun, *args, **kwargs):
-    """Sparse attention using Top-CDF mask with self-similarity gating."""
-    tau = kwargs.get("tau", 0.90)
-    gamma_q = kwargs.get("gamma_q", 0.6)
-    gamma_k = kwargs.get("gamma_k", 0.6)
+    """Sparse attention using Top-CDF mask with self-similarity gating.
+
+    Supports per-layer and per-head thresholds by accepting kwargs tables with
+    shapes: [L, H] or [H] or scalar for keys: 
+      - 'cdfthreshd' -> tau (Top-CDF)
+      - 'simthreshd1' -> gamma_q (Q self-sim)
+      - 'simthreshd2' -> gamma_k (K self-sim)
+      - 'is_sparse' -> optional per-head boolean; if False, force tau=1.0
+    """
+    import time
+
     blocksz = kwargs["blocksz"]
-    
+
     batch, heads, seq_len, D = query.shape
-    out = torch.empty([batch, heads, seq_len, D], device='cuda', dtype=torch.bfloat16)
-    
+    device = query.device
+    out = torch.empty([batch, heads, seq_len, D], device=device, dtype=torch.bfloat16)
+
+    # Helper to pick per-layer/per-head parameter and broadcast
+    def pick_table(name: str, default: float, reshape: str):
+        table = kwargs.get(name, None)
+        if table is None:
+            t = torch.full((1, heads), float(default), device=device, dtype=torch.float32)
+        else:
+            t = torch.as_tensor(table, device=device, dtype=torch.float32)
+            if t.ndim == 1:  # [H]
+                t = t.unsqueeze(0)  # [1,H]
+            # assume [L,H]
+            t = t[current_layer]  # [H]
+            t = t.unsqueeze(0)     # [1,H]
+        if reshape == "4d":
+            return t.view(1, heads, 1, 1)  # for tau broadcast over [B,H,n_q,1]
+        if reshape == "3d":
+            return t.view(1, heads, 1)     # for gamma broadcast over [B,H,n_*]
+        return t
+
+    # Pull per-head/per-layer thresholds if provided; fallback to scalars
+    tau = pick_table("cdfthreshd", kwargs.get("tau", 0.90), reshape="4d")
+    gamma_q = pick_table("simthreshd1", kwargs.get("gamma_q", 0.60), reshape="3d")
+    gamma_k = pick_table("simthreshd2", kwargs.get("gamma_k", 0.60), reshape="3d")
+
+    # Optional: force dense on heads where is_sparse=False by setting tau=1.0
+    is_sparse = kwargs.get("is_sparse", None)
+    if is_sparse is not None:
+        flag = torch.as_tensor(is_sparse, device=device, dtype=torch.bool)
+        if flag.ndim == 1:
+            flag = flag.unsqueeze(0)  # [1,H]
+        dense_mask = (~flag[current_layer]).view(1, heads, 1, 1)  # [1,H,1,1]
+        tau = torch.where(dense_mask, torch.ones_like(tau), tau)
+
+    # Time mask computation
+    torch.cuda.synchronize()
+    t0 = time.time()
+
     # Compute Top-CDF sparse mask
     kv_indices, kv_num_indices = mask_utils.qk_topcdfmask_indices(
         query, key, batch, heads, seq_len, D, blocksz,
         tau=tau, gamma_q=gamma_q, gamma_k=gamma_k
     )
     
+    torch.cuda.synchronize()
+    t1 = time.time()
+    mask_time = t1 - t0
+    
+    # Compute sparsity percentage
+    sparsity_ratio = kv_num_indices.float().mean() / seq_len
+    
     # Run sparse attention with computed mask
+    torch.cuda.synchronize()
+    t2 = time.time()
+    
     spattn_interface.sp_attn(
         out, query.contiguous(), key.contiguous(), value.contiguous(), 
         kv_indices.contiguous(), kv_num_indices.contiguous()
     )
+    
+    torch.cuda.synchronize()
+    t3 = time.time()
+    attn_time = t3 - t2
+    
+    # Log every 10 iterations or first layer of each ditrun
+    if current_layer == 0 or ditrun % 10 == 0:
+        print(f'[TopCDF] ditrun={ditrun:3d} layer={current_layer:2d} | '
+              f'mask: {mask_time*1000:6.2f}ms | attn: {attn_time*1000:6.2f}ms | '
+              f'sparsity: {sparsity_ratio*100:5.2f}% (keeping {kv_num_indices.float().mean():.1f}/{seq_len} tokens)', 
+              flush=True)
+    
     return out
 
 

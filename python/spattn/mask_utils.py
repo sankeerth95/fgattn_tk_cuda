@@ -1,6 +1,6 @@
 import torch
 import math
-from nvidia import nvcomp
+# from nvidia import nvcomp
 if True:
     spattn_interface = torch.ops.cuda_attn
 else:
@@ -512,9 +512,17 @@ def qk_topcdfmask_indices(q, k, B: int, H: int, S: int, D: int, BLOCKSZ: int,
     
     q_self_sim = compute_self_similarity(q, q_bar)  # [B, H, n_q]
     k_self_sim = compute_self_similarity(k, k_bar)  # [B, H, n_k]
-    
-    q_similar = (q_self_sim >= gamma_q)  # [B, H, n_q]
-    k_similar = (k_self_sim >= gamma_k)  # [B, H, n_k]
+
+    # Support scalar or per-head thresholds: gamma_* can be scalar or [1,H,1]
+    if not torch.is_tensor(gamma_q):
+        gamma_q = torch.tensor(float(gamma_q), device=q_self_sim.device, dtype=q_self_sim.dtype)
+    if not torch.is_tensor(gamma_k):
+        gamma_k = torch.tensor(float(gamma_k), device=k_self_sim.device, dtype=k_self_sim.dtype)
+    gamma_q = gamma_q.to(device=q_self_sim.device, dtype=q_self_sim.dtype)
+    gamma_k = gamma_k.to(device=k_self_sim.device, dtype=k_self_sim.dtype)
+
+    q_similar = (q_self_sim >= gamma_q)  # [B, H, n_q] via broadcast
+    k_similar = (k_self_sim >= gamma_k)  # [B, H, n_k] via broadcast
     
     # 3. Proxy attention at block level
 # q_bar: [B,H,n_q,D], k_bar: [B,H,n_k,D]
@@ -543,9 +551,12 @@ def qk_topcdfmask_indices(q, k, B: int, H: int, S: int, D: int, BLOCKSZ: int,
     P_sorted, sorted_indices = torch.sort(P, dim=-1, descending=True)  # [B,H,n_q,n_k]
     P_cumsum = torch.cumsum(P_sorted, dim=-1)  # [B,H,n_q,n_k]
     
-    # Compute row sums for threshold
+    # Compute row sums for threshold (supports scalar or [1,H,1,1] tau)
+    if not torch.is_tensor(tau):
+        tau = torch.tensor(float(tau), device=P.device, dtype=P.dtype)
+    tau = tau.to(device=P.device, dtype=P.dtype)
     row_sums = P.sum(dim=-1, keepdim=True)  # [B, H, n_q, 1]
-    threshold = tau * row_sums  # [B,H,n_q,1]
+    threshold = tau * row_sums  # [B,H,n_q,1] via broadcast
     
     # Keep blocks: strictly before reaching tau mass, PLUS the first crossing index
     keep_sorted = (P_cumsum < threshold)                      # strictly below tau mass
